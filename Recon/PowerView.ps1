@@ -20699,19 +20699,47 @@ Returns all GPO delegations on a given GPO.
     }
 }
 
-function Find-RealAdminUsers {
+function Find-HighValueAccounts {
 <#
 .SYNOPSIS
 
-Finds users that are currently administrative users as AdminCount doesn't necessarily mean the privileges are current.
+Finds users that are currently high value accounts as AdminCount doesn't necessarily mean the privileges are current.
 
 Author: Charlie Clark (@exploitph)  
 License: BSD 3-Clause  
 Required Dependencies: None  
 
+.PARAMETER SPN
+
+Switch. Only return user objects with non-null service principal names.
+
 .PARAMETER Enabled
 
-Switch. Only return enabled users.
+Switch. Return accounts that are currently enabled.
+
+.PARAMETER Disabled
+
+Switch. Return accounts that are currently disabled.
+
+.PARAMETER AllowDelegation
+
+Switch. Return accounts that are not marked as 'sensitive and not allowed for delegation'
+
+.PARAMETER DisallowDelegation
+
+Switch. Return accounts that are marked as 'sensitive and not allowed for delegation'
+
+.PARAMETER PassNotExpire
+
+Switch. Return accounts whose passwords do not expire.
+
+.PARAMETER Users
+
+Switch. Only return user accounts.
+
+.PARAMETER Computers
+
+Switch. Only return computer accounts.
 
 .PARAMETER Domain
 
@@ -20721,17 +20749,63 @@ Specifies the domain to use for the query, defaults to the current domain.
 
 Specifies an Active Directory server (domain controller) to bind to.
 
+.PARAMETER ResultPageSize
+
+Specifies the PageSize to set for the LDAP searcher object.
+
+.PARAMETER ServerTimeLimit
+
+Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.PARAMETER Raw
+
+Switch. Return raw results instead of translating the fields into a custom PSObject.
+
 .EXAMPLE
 
-Find-RealAdminUsers -Enabled
+Find-HighValueAccounts -Enabled
 
-Returns all enabled administrative users.
+Returns all enabled high value accounts.
 #>
 
-    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType('PowerView.User')]
+    [OutputType('PowerView.User.Raw')]
+    [CmdletBinding(DefaultParameterSetName = 'Enabled')]
     Param (
         [Switch]
+        $SPN,
+
+        [Parameter(ParameterSetName = 'Enabled')]
+        [Switch]
         $Enabled,
+
+        [Parameter(ParameterSetName = 'Disabled')]
+        [Switch]
+        $Disabled,
+
+        [Parameter(ParameterSetName = 'AllowDelegation')]
+        [Switch]
+        $AllowDelegation,
+
+        [Parameter(ParameterSetName = 'DisallowDelegation')]
+        [Switch]
+        $DisallowDelegation,
+
+        [Switch]
+        $PassNotExpire,
+
+        [Switch]
+        $Users,
+
+        [Switch]
+        $Computers,
 
         [ValidateNotNullOrEmpty()]
         [String]
@@ -20740,30 +20814,122 @@ Returns all enabled administrative users.
         [ValidateNotNullOrEmpty()]
         [Alias('DomainController')]
         [String]
-        $Server
+        $Server,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ResultPageSize = 200,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ServerTimeLimit,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $Raw
     )
 
-    # array of high privileged groups from https://stealthbits.com/blog/fun-with-active-directorys-admincount-attribute/
-    $AdminGroups = @(
-        'Account Operators',
-        'Administrators',
-        'Backup Operators',
-        'Cert Publishers',
-        'Domain Admins'
-    )
+    BEGIN {
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
+        if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        $ObjectSearcher = Get-DomainSearcher @SearcherArguments
 
-    # Where we'll store all admin usernames
-    $Admins = @()
+        # array of high privileged groups from https://stealthbits.com/blog/fun-with-active-directorys-admincount-attribute/
+        $AdminGroups = @(
+            'Account Operators',
+            'Administrators',
+            'Backup Operators',
+            'Cert Publishers',
+            'Domain Admins',
+            'Enterprise Admins',
+            'Enterprise Key Admins',
+            'Key Admins',
+            'Print Operators',
+            'Replicator',
+            'Schema Admins',
+            'Server Operators'
+        )
 
-    foreach ($AdminGroup in $AdminGroups) {
-        Get-DomainGroupMember $AdminGroup -Recurse | ?{$_.MemberObjectClass -eq "user"} | select -expand MemberName | Sort-Object | Get-Unique | foreach {
-            if (($Admins.Count -eq 0 ) -Or (!($Admins.Contains($_)))) {
-                $Admins += $_
-            }
-        }
+        # variables
+        $IdentityFilter = ''
+        $Check = @()
     }
 
-    $Admins
+    PROCESS {
+
+        foreach ($AdminGroup in $AdminGroups) {
+            Get-DomainGroupMember $AdminGroup -Recurse | ?{$_.MemberObjectClass -ne 'group'} | foreach {
+                if (((!($Users)) -And (!($Computers))) -Or ((($Users) -And ($_.MemberObjectClass -eq 'user')) -Or (($Computers) -And ($_.MemberObjectClass -eq 'computer')))) {
+                    $MemberName = $_.MemberName
+                    if (($Check.Count -eq 0 ) -Or (!($Check.Contains($MemberName)))) {
+                        $IdentityFilter += "(samaccountname=$MemberName)"
+                        $Check += $MemberName
+                    }
+                }
+            }
+        }
+
+        $Filter = "(|$IdentityFilter)"
+
+        # Additional filters
+        if ($PSBoundParameters['SPN']) {
+            Write-Verbose '[Find-HighValueAccounts] Searching for non-null service principal names'
+            $Filter += '(servicePrincipalName=*)'
+        }
+        if ($PSBoundParameters['Enabled']) {
+            Write-Verbose '[Find-HighValueAccounts] Searching for users who are enabled'
+            # negation of "Accounts that are disabled"
+            $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=2))'
+        }
+        if ($PSBoundParameters['Disabled']) {
+            Write-Verbose '[Find-HighValueAccounts] Searching for users who are disabled'
+            # inclusion of "Accounts that are disabled"
+            $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=2)'
+        }
+        if ($PSBoundParameters['AllowDelegation']) {
+            Write-Verbose '[Find-HighValueAccounts] Searching for users who can be delegated'
+            # negation of "Accounts that are sensitive and not trusted for delegation"
+            $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=1048576))'
+        }
+        if ($PSBoundParameters['DisallowDelegation']) {
+            Write-Verbose '[Find-HighValueAccounts] Searching for users who are sensitive and not trusted for delegation'
+            $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=1048576)'
+        }
+        if ($PSBoundParameters['PassNotExpire']) {
+            Write-Verbose '[Find-HighValueAccounts] Searching for users whose passwords never expire'
+            $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=65536)'
+        }
+
+        $ObjectSearcher.filter = "(&$Filter)"
+        Write-Verbose "[Find-HighValueAccounts] Find-HighValueAccounts filter string: $($ObjectSearcher.filter)"
+        $Results = $ObjectSearcher.FindAll()
+        $Results | Where-Object {$_} | ForEach-Object {
+            if ($PSBoundParameters['Raw']) {
+                # return raw result objects
+                $Object = $_
+                $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject.Raw')
+            }
+            else {
+                $Object = Convert-LDAPProperty -Properties $_.Properties
+                $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject')
+            }
+            $Object
+        }
+        if ($Results) {
+            try { $Results.dispose() }
+            catch {
+                Write-Verbose "[Find-HighValueAccounts] Error disposing of the Results object: $_"
+            }
+        }
+        $ObjectSearcher.dispose()
+    }
 }
 
 ########################################################
