@@ -5075,11 +5075,9 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [Switch]
         $AdminCount,
 
-        [Parameter(ParameterSetName = 'Enabled')]
         [Switch]
         $Enabled,
 
-        [Parameter(ParameterSetName = 'Disabled')]
         [Switch]
         $Disabled,
 
@@ -20777,16 +20775,14 @@ Returns all enabled high value accounts.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
     [OutputType('PowerView.User')]
     [OutputType('PowerView.User.Raw')]
-    [CmdletBinding(DefaultParameterSetName = 'Enabled')]
+    [CmdletBinding(DefaultParameterSetName = 'AllowDelegation')]
     Param (
         [Switch]
         $SPN,
 
-        [Parameter(ParameterSetName = 'Enabled')]
         [Switch]
         $Enabled,
 
-        [Parameter(ParameterSetName = 'Disabled')]
         [Switch]
         $Disabled,
 
