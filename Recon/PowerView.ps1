@@ -4895,6 +4895,14 @@ Dynamic parameter that accepts one or more values from $UACEnum, including
 
 Switch. Return users with '(adminCount=1)' (meaning are/were privileged).
 
+.PARAMETER Enabled
+
+Switch. Return users that are currently enabled.
+
+.PARAMETER Disabled
+
+Switch. Return users that are currently disabled.
+
 .PARAMETER AllowDelegation
 
 Switch. Return user accounts that are not marked as 'sensitive and not allowed for delegation'
@@ -4902,6 +4910,14 @@ Switch. Return user accounts that are not marked as 'sensitive and not allowed f
 .PARAMETER DisallowDelegation
 
 Switch. Return user accounts that are marked as 'sensitive and not allowed for delegation'
+
+.PARAMETER PassNotExpire
+
+Switch. Return users whose passwords do not expire.
+
+.PARAMETER Unconstrained
+
+Switch. Return users configured for unconstrained delegation.
 
 .PARAMETER TrustedToAuth
 
@@ -5059,6 +5075,14 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [Switch]
         $AdminCount,
 
+        [Parameter(ParameterSetName = 'Enabled')]
+        [Switch]
+        $Enabled,
+
+        [Parameter(ParameterSetName = 'Disabled')]
+        [Switch]
+        $Disabled,
+
         [Parameter(ParameterSetName = 'AllowDelegation')]
         [Switch]
         $AllowDelegation,
@@ -5066,6 +5090,12 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [Parameter(ParameterSetName = 'DisallowDelegation')]
         [Switch]
         $DisallowDelegation,
+
+        [Switch]
+        $PassNotExpire,
+
+        [Switch]
+        $Unconstrained,
 
         [Switch]
         $TrustedToAuth,
@@ -5207,14 +5237,32 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 Write-Verbose '[Get-DomainUser] Searching for non-null service principal names'
                 $Filter += '(servicePrincipalName=*)'
             }
+            if ($PSBoundParameters['Enabled']) {
+                Write-Verbose '[Get-DomainUser] Searching for users who are enabled'
+                # negation of "Accounts that are disabled"
+                $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=2))'
+            }
+            if ($PSBoundParameters['Disabled']) {
+                Write-Verbose '[Get-DomainUser] Searching for users who are disabled'
+                # inclusion of "Accounts that are disabled"
+                $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=2)'
+            }
             if ($PSBoundParameters['AllowDelegation']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who can be delegated'
                 # negation of "Accounts that are sensitive and not trusted for delegation"
-                $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=1048574))'
+                $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=1048576))'
             }
             if ($PSBoundParameters['DisallowDelegation']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who are sensitive and not trusted for delegation'
-                $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=1048574)'
+                $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=1048576)'
+            }
+            if ($PSBoundParameters['PassNotExpire']) {
+                Write-Verbose '[Get-DomainUser] Searching for users whose passwords never expire'
+                $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=65536)'
+            }
+            if ($PSBoundParameters['Unconstrained']) {
+                Write-Verbose '[Get-DomainUser] Searching for users configured for unconstrained delegation'
+                $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=524288)'
             }
             if ($PSBoundParameters['AdminCount']) {
                 Write-Verbose '[Get-DomainUser] Searching for adminCount=1'
@@ -6001,9 +6049,17 @@ Switch. Return computer objects that have unconstrained delegation.
 
 Switch. Return computer objects that are trusted to authenticate for other principals.
 
+.PARAMETER AllowedToAct
+
+Switch. Return computer objects that are configured to allow resource-based constrained delegation.
+
 .PARAMETER Printers
 
 Switch. Return only printers.
+
+.PARAMETER ExcludeDCs
+
+Switch. Do not return domain controllers.
 
 .PARAMETER SPN
 
@@ -6137,7 +6193,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $TrustedToAuth,
 
         [Switch]
+        $AllowedToAct,
+
+        [Switch]
         $Printers,
+
+        [Switch]
+        $ExcludeDCs,
 
         [ValidateNotNullOrEmpty()]
         [Alias('ServicePrincipalName')]
@@ -6287,9 +6349,17 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 Write-Verbose '[Get-DomainComputer] Searching for computers that are trusted to authenticate for other principals'
                 $Filter += '(msds-allowedtodelegateto=*)'
             }
+            if ($PSBoundParameters['AllowedToAct']) {
+                Write-Verbose '[Get-DomainComputer] Searching for computers that are configured to allow resource-based constrained delegation'
+                $Filter += '(msds-allowedtoactonbehalfofotheridentity=*)'
+            }
             if ($PSBoundParameters['Printers']) {
                 Write-Verbose '[Get-DomainComputer] Searching for printers'
                 $Filter += '(objectCategory=printQueue)'
+            }
+            if ($PSBoundParameters['ExcludeDCs']) {
+                Write-Verbose '[Get-DomainComputer] Excluding domain controllers'
+                $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=8192))'
             }
             if ($PSBoundParameters['SPN']) {
                 Write-Verbose "[Get-DomainComputer] Searching for computers with SPN: $SPN"
@@ -20629,6 +20699,72 @@ Returns all GPO delegations on a given GPO.
     }
 }
 
+function Find-RealAdminUsers {
+<#
+.SYNOPSIS
+
+Finds users that are currently administrative users as AdminCount doesn't necessarily mean the privileges are current.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: None  
+
+.PARAMETER Enabled
+
+Switch. Only return enabled users.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.EXAMPLE
+
+Find-RealAdminUsers -Enabled
+
+Returns all enabled administrative users.
+#>
+
+    [CmdletBinding()]
+    Param (
+        [Switch]
+        $Enabled,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server
+    )
+
+    # array of high privileged groups from https://stealthbits.com/blog/fun-with-active-directorys-admincount-attribute/
+    $AdminGroups = @(
+        'Account Operators',
+        'Administrators',
+        'Backup Operators',
+        'Cert Publishers',
+        'Domain Admins'
+    )
+
+    # Where we'll store all admin usernames
+    $Admins = @()
+
+    foreach ($AdminGroup in $AdminGroups) {
+        Get-DomainGroupMember $AdminGroup -Recurse | ?{$_.MemberObjectClass -eq "user"} | select -expand MemberName | Sort-Object | Get-Unique | foreach {
+            if (($Admins.Count -eq 0 ) -Or (!($Admins.Contains($_)))) {
+                $Admins += $_
+            }
+        }
+    }
+
+    $Admins
+}
 
 ########################################################
 #
