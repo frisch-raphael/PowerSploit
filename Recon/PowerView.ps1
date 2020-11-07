@@ -8167,7 +8167,7 @@ Custom PSObject with ACL entries.
 
         [String]
         [Alias('Rights')]
-        [ValidateSet('All', 'ResetPassword', 'WriteMembers')]
+        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended')]
         $RightsFilter,
 
         [ValidateNotNullOrEmpty()]
@@ -8304,26 +8304,31 @@ Custom PSObject with ACL entries.
 
                 try {
                     New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Object['ntsecuritydescriptor'][0], 0 | ForEach-Object { if ($PSBoundParameters['Sacl']) {$_.SystemAcl} else {$_.DiscretionaryAcl} } | ForEach-Object {
+                        $Continue = $False
+                        $_ | Add-Member NoteProperty 'ObjectDN' $Object.distinguishedname[0]
+                        $_ | Add-Member NoteProperty 'ObjectSID' $ObjectSid
+                        $_ | Add-Member NoteProperty 'ActiveDirectoryRights' ([Enum]::ToObject([System.DirectoryServices.ActiveDirectoryRights], $_.AccessMask))
                         if ($PSBoundParameters['RightsFilter']) {
                             $GuidFilter = Switch ($RightsFilter) {
-                                'ResetPassword' { '00299570-246d-11d0-a768-00aa006e0529' }
-                                'WriteMembers' { 'bf9679c0-0de6-11d0-a285-00aa003049e2' }
+                                'ResetPassword' { @('00299570-246d-11d0-a768-00aa006e0529') }
+                                'WriteMembers' { @('bf9679c0-0de6-11d0-a285-00aa003049e2') }
+                                'DCSync' { @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', 'GenericAll') }
+                                'AllExtended' { 'ExtendedRight' }
+                                'All' { 'GenericAll' }
                                 Default { '00000000-0000-0000-0000-000000000000' }
                             }
-                            if ($_.ObjectType -eq $GuidFilter) {
-                                $_ | Add-Member NoteProperty 'ObjectDN' $Object.distinguishedname[0]
-                                $_ | Add-Member NoteProperty 'ObjectSID' $ObjectSid
+                            if ($_.AceQualifier -eq 'AccessAllowed' -and (($_.ObjectAceType -and $GuidFilter -contains $_.ObjectAceType) -or ($_.InheritedObjectAceType -and $GuidFilter -contains $_.InheritedObjectAceType))) {
+                                $Continue = $True
+                            }
+                            elseif ($_.AceQualifier -eq 'AccessAllowed' -and !($_.ObjectAceType) -and !($_.InheritedObjectAceType) -and (($_.ActiveDirectoryRights -match $GuidFilter) -or ($GuidFilter -contains $_.ActiveDirectoryRights))) {
                                 $Continue = $True
                             }
                         }
                         else {
-                            $_ | Add-Member NoteProperty 'ObjectDN' $Object.distinguishedname[0]
-                            $_ | Add-Member NoteProperty 'ObjectSID' $ObjectSid
                             $Continue = $True
                         }
 
                         if ($Continue) {
-                            $_ | Add-Member NoteProperty 'ActiveDirectoryRights' ([Enum]::ToObject([System.DirectoryServices.ActiveDirectoryRights], $_.AccessMask))
                             if ($GUIDs) {
                                 # if we're resolving GUIDs, map them them to the resolved hash table
                                 $AclProperties = @{}
@@ -21217,6 +21222,78 @@ Returns the RBCD configuration for accounts in current domain.
         }
     }
 }
+
+
+function Get-DomainDCSync {
+<#
+.SYNOPSIS
+
+Finds accounts that have DCSync privileges.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: None  
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.EXAMPLE
+
+Get-DomainDCSync
+
+Returns accounts that have DCSync privileges in current domain.
+#>
+    [OutputType('PowerView.Computer')]
+    [OutputType('PowerView.Computer.Raw')]
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server
+    )
+
+
+    PROCESS {
+        $DomainSID = Get-DomainSID
+        Write-Verbose "[Get-DomainDCSync] Retrieving the domain SID: $DomainSID"
+        $DomainDN = (Get-DomainObject $DomainSID).distinguishedname
+        Write-Verbose "[Get-DomainDCSync] Retrieving the domain distinguishedname: $DomainDN"
+
+        # Hash Table for storing DCSync privileges
+        $Privs = @{}
+
+        # Loop through ACL on the domain head
+        Get-DomainObjectACL $DomainDN -RightsFilter DCSync | ForEach-Object {
+            $ACE = $_
+            $SID = $ACE.SecurityIdentifier
+            $ADRights = $ACE.ActiveDirectoryRights
+            if ($ADRights -eq 'GenericAll') {
+                $Privs.$SID = @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2')
+            }
+            else {
+                $ACEType = $ACE.ObjectAceType
+                if (!($Privs.keys -contains $SID)) {
+                    $Privs.Add($SID, @($ACEType))
+                }
+                elseif (!($Privs.$SID -contains $ACEType)) {
+                    $Privs.$SID += $ACEType
+                }
+            }
+        }
+        $Privs
+    }
+}
+
 
 
 ########################################################
