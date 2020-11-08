@@ -3210,6 +3210,14 @@ A custom PSObject with LDAP hashtable properties translated.
                     $ObjectProperties[$_] = [datetime]::fromfiletime($Properties[$_][0])
                 }
             }
+            elseif ($_ -eq 'lockouttime') {
+                if ($Properties[$_][0] -eq 0 -or $Properties[$_][0] -gt [DateTime]::MaxValue.Ticks) {
+                    $ObjectProperties[$_] = "UNLOCKED"
+                }
+                else {
+                    $ObjectProperties[$_] = [datetime]::fromfiletime($Properties[$_][0])
+                }
+            }
             elseif ( ($_ -eq 'lastlogon') -or ($_ -eq 'lastlogontimestamp') -or ($_ -eq 'pwdlastset') -or ($_ -eq 'lastlogoff') -or ($_ -eq 'badPasswordTime') ) {
                 # convert timestamps
                 if ($Properties[$_][0] -is [System.MarshalByRefObject]) {
@@ -4903,6 +4911,14 @@ Switch. Return users that are currently enabled.
 
 Switch. Return users that are currently disabled.
 
+.PARAMETER Locked
+
+Switch. Return users that are currently locked.
+
+.PARAMETER Unlocked
+
+Switch. Return users that are currently unlocked.
+
 .PARAMETER AllowDelegation
 
 Switch. Return user accounts that are not marked as 'sensitive and not allowed for delegation'
@@ -5070,7 +5086,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
     [OutputType('PowerView.User')]
     [OutputType('PowerView.User.Raw')]
-    [CmdletBinding(DefaultParameterSetName = 'AllowDelegation')]
+    [CmdletBinding(DefaultParameterSetName = 'Enabled')]
     Param(
         [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
         [Alias('DistinguishedName', 'SamAccountName', 'Name', 'MemberDistinguishedName', 'MemberName')]
@@ -5083,17 +5099,23 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [Switch]
         $AdminCount,
 
+        [Parameter(ParameterSetName = 'Enabled')]
         [Switch]
         $Enabled,
 
+        [Parameter(ParameterSetName = 'Disabled')]
         [Switch]
         $Disabled,
 
-        [Parameter(ParameterSetName = 'AllowDelegation')]
+        [Switch]
+        $Locked,
+
+        [Switch]
+        $Unlocked,
+
         [Switch]
         $AllowDelegation,
 
-        [Parameter(ParameterSetName = 'DisallowDelegation')]
         [Switch]
         $DisallowDelegation,
 
@@ -5260,12 +5282,37 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 # inclusion of "Accounts that are disabled"
                 $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=2)'
             }
+            if ($PSBoundParameters['Locked']) {
+                Write-Verbose '[Get-DomainUser] Searching for users who are locked'
+                # need to get the lockout duration from the domain policy
+                $Duration = ((Get-DomainPolicy -Policy Domain).SystemAccess).LockoutDuration
+                if ($Duration -eq -1) {
+                    $LockoutTime = 1
+                }
+                else {
+                    $LockoutTime = (Get-Date).AddMinutes(-$Duration).ToFileTimeUtc()
+                }
+                $Filter += "(lockoutTime>=$LockoutTime)"
+            }
+            elseif ($PSBoundParameters['Unlocked']) {
+                Write-Verbose '[Get-DomainUser] Searching for users who are unlocked'
+                # need to get the lockout duration from the domain policy
+                $Duration = ((Get-DomainPolicy -Policy Domain).SystemAccess).LockoutDuration
+                if ($Duration -eq -1) {
+                    $LockoutTime = 1
+                }
+                else {
+                    $LockoutTime = (Get-Date).AddMinutes(-$Duration).ToFileTimeUtc()
+                }
+                $Filter += "(!(lockoutTime>=$LockoutTime))"
+            }
+
             if ($PSBoundParameters['AllowDelegation']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who can be delegated'
                 # negation of "Accounts that are sensitive and not trusted for delegation"
                 $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=1048576))'
             }
-            if ($PSBoundParameters['DisallowDelegation']) {
+            elseif ($PSBoundParameters['DisallowDelegation']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who are sensitive and not trusted for delegation'
                 $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=1048576)'
             }
