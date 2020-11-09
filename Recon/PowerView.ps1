@@ -20810,11 +20810,11 @@ Switch. Return accounts whose passwords do not expire.
 
 .PARAMETER Users
 
-Switch. Only return user accounts.
+Switch. Return user accounts.
 
 .PARAMETER Computers
 
-Switch. Only return computer accounts.
+Switch. Return computer accounts.
 
 .PARAMETER Domain
 
@@ -20938,7 +20938,7 @@ Returns all enabled high value accounts.
     PROCESS {
 
         foreach ($AdminGroup in $AdminGroups) {
-            Get-DomainGroupMember $AdminGroup -Recurse | ?{$_.MemberObjectClass -ne 'group'} | foreach {
+            Get-DomainGroupMember $AdminGroup -Recurse | ?{$_.MemberObjectClass -ne 'group'} | ForEach-Object {
                 if (((!($Users)) -And (!($Computers))) -Or ((($Users) -And ($_.MemberObjectClass -eq 'user')) -Or (($Computers) -And ($_.MemberObjectClass -eq 'computer')))) {
                     $MemberName = $_.MemberName
                     if (($Check.Count -eq 0 ) -Or (!($Check.Contains($MemberName)))) {
@@ -21220,7 +21220,7 @@ Returns the RBCD configuration for accounts in current domain.
                 Write-Verbose "[Get-DomainRBCD] Using additional LDAP filter: $LDAPFilter"
                 $Filter += "$LDAPFilter"
             }
-            if ($Filter -and $Filter -ne '') {
+            f ($Filter -and $Filter -ne '') {
                 $RBCDSearcher.filter = "(&$Filter)"
             }
             Write-Verbose "[Get-DomainRBCD] Get-DomainRBCD filter string: $($RBCDSearcher.filter)"
@@ -21281,13 +21281,72 @@ Author: Charlie Clark (@exploitph)
 License: BSD 3-Clause  
 Required Dependencies: None  
 
+.PARAMETER Users
+
+Switch. Return user accounts.
+
+.PARAMETER Computers
+
+Switch. Return computer accounts.
+
+.PARAMETER Groups
+
+Switch. Return groups.
+
 .PARAMETER Domain
 
 Specifies the domain to use for the query, defaults to the current domain.
 
+.PARAMETER LDAPFilter
+
+Specifies an LDAP query string that is used to filter Active Directory objects.
+
+.PARAMETER Properties
+
+Specifies the properties of the output object to retrieve from the server.
+
+.PARAMETER SearchBase
+
+The LDAP source to search through, e.g. "LDAP://OU=secret,DC=testlab,DC=local"
+Useful for OU queries.
+
 .PARAMETER Server
 
 Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SearchScope
+
+Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
+
+.PARAMETER ResultPageSize
+
+Specifies the PageSize to set for the LDAP searcher object.
+
+.PARAMETER ServerTimeLimit
+
+Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
+
+.PARAMETER SecurityMasks
+
+Specifies an option for examining security information of a directory object.
+One of 'Dacl', 'Group', 'None', 'Owner', 'Sacl'.
+
+.PARAMETER Tombstone
+
+Switch. Specifies that the searcher should also return deleted/tombstoned objects.
+
+.PARAMETER FindOne
+
+Only return one result object.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.PARAMETER Raw
+
+Switch. Return raw results instead of translating the fields into a custom PSObject.
 
 .EXAMPLE
 
@@ -21299,16 +21358,84 @@ Returns accounts that have DCSync privileges in current domain.
     [OutputType('PowerView.Computer.Raw')]
     [CmdletBinding()]
     Param (
+        [Switch]
+        $Users,
+
+        [Switch]
+        $Computers,
+
+        [Switch]
+        $Groups,
+
         [ValidateNotNullOrEmpty()]
         [String]
         $Domain,
 
         [ValidateNotNullOrEmpty()]
+        [Alias('Filter')]
+        [String]
+        $LDAPFilter,
+
+        [ValidateNotNullOrEmpty()]
+        [String[]]
+        $Properties,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('ADSPath')]
+        [String]
+        $SearchBase,
+
+        [ValidateNotNullOrEmpty()]
         [Alias('DomainController')]
         [String]
-        $Server
+        $Server,
+
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
+        [String]
+        $SearchScope = 'Subtree',
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ResultPageSize = 200,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ServerTimeLimit,
+
+        [ValidateSet('Dacl', 'Group', 'None', 'Owner', 'Sacl')]
+        [String]
+        $SecurityMasks,
+
+        [Switch]
+        $Tombstone,
+
+        [Alias('ReturnOne')]
+        [Switch]
+        $FindOne,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $Raw
+
     )
 
+    BEGIN {
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
+        if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
+        if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
+        if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['SecurityMasks']) { $SearcherArguments['SecurityMasks'] = $SecurityMasks }
+        if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        $ObjectSearcher = Get-DomainSearcher @SearcherArguments
+    }
 
     PROCESS {
         $DomainSID = Get-DomainSID
@@ -21319,16 +21446,22 @@ Returns accounts that have DCSync privileges in current domain.
         # Hash Table for storing DCSync privileges
         $Privs = @{}
 
+        # Are any type filters set?
+        $NoType = $True
+        if ($PSBoundParameters['Users'] -or $PSBoundParameters['Computers'] -or $PSBoundParameters['Groups']) {
+            $NoType = $False
+        }
+
         # Loop through ACL on the domain head
         Get-DomainObjectACL $DomainDN -RightsFilter DCSync | ForEach-Object {
             $ACE = $_
-            $SID = $ACE.SecurityIdentifier
+            $SID = $ACE.SecurityIdentifier.Value
             $ADRights = $ACE.ActiveDirectoryRights
             if ($ADRights -eq 'GenericAll') {
                 $Privs.$SID = @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2')
             }
             else {
-                $ACEType = $ACE.ObjectAceType
+                $ACEType = $ACE.ObjectAceType.Guid
                 if (!($Privs.keys -contains $SID)) {
                     $Privs.Add($SID, @($ACEType))
                 }
@@ -21337,7 +21470,101 @@ Returns accounts that have DCSync privileges in current domain.
                 }
             }
         }
-        $Privs
+
+        # Initial account type filter
+        $Filter = ''
+        $TypeFilter = ''
+        $IdentityFilter = ''
+        if ($PSBoundParameters['Users']) {
+            $TypeFilter += '(samAccountType=805306368)'
+        }
+        if ($PSBoundParameters['Computers']) {
+            $TypeFilter += '(samAccountType=805306369)'
+        }
+        if ($PSBoundParameters['Groups']) {
+            $TypeFilter += '(objectCategory=group)'
+        }
+        if ($TypeFilter -and ($TypeFilter.Trim() -ne '')) {
+            $Filter = "(|$TypeFilter)"
+        }
+        else {
+            $Filter = '(|(samAccountType=805306368)(samAccountType=805306369))'
+        }
+
+        # Keep track of SIDs that have been added
+        $Check = @()
+
+        $Privs.keys | ForEach-Object {
+            if ($Privs.$_.Contains('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2') -and $Privs.$_.Contains('1131f6ad-9c07-11d1-f79f-00c04fc2dcd2')) {
+                $Object = Get-DomainObject $_
+                if ($Object) {
+                    $ObjectSID = $Object.objectsid
+                    if ($Object.objectclass -contains 'group') {
+                        if ($PSBoundParameters['Groups'] -and !($Check -contains $ObjectSID)) {
+                            $IdentityFilter += "(objectsid=$ObjectSID)"
+                        }
+                        $Object | Get-DomainGroupMember -Recurse | ForEach-Object {
+                            $MemberSID = $_.MemberSID
+                            if ($_.MemberObjectClass -ne 'group' -and !($Check -contains $MemberSID)) {
+                                if (($NoType) -Or ((($PSBoundParameters['Users']) -And ($_.MemberObjectClass -eq 'user')) -Or (($PSBoundParameters['Computers']) -And ($_.MemberObjectClass -eq 'computer')))) {
+                                    $IdentityFilter += "(objectsid=$MemberSID)"
+                                }
+                            }
+                            elseif (!($Check -contains $MemberSID)) {
+                                if ($PSBoundParameters['Groups']) {
+                                    $IdentityFilter += "(objectsid=$MemberSID)"
+                                }
+                            }
+                            $Check += $MemberSID
+                        }
+                    }
+                    elseif (!($Check -contains $ObjectSID)) {
+                        if (($NoType) -Or ((($PSBoundParameters['Users']) -And ($Object.samaccounttype -eq 'USER_OBJECT')) -Or (($PSBoundParameters['Computers']) -And ($Object.samaccounttype -eq 'MACHINE_ACCOUNT')))) {
+                            $IdentityFilter += "(objectsid=$ObjectSID)"
+                        }
+                    }
+                    $Check += $ObjectSID
+                }
+            }
+        }
+
+        if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
+            $Filter += "(|$IdentityFilter)"
+        }
+
+        if ($PSBoundParameters['LDAPFilter']) {
+            Write-Verbose "[Get-DomainDCSync] Using additional LDAP filter: $LDAPFilter"
+            $Filter += "$LDAPFilter"
+        }
+
+        if ($Filter -and $Filter -ne '') {
+            $ObjectSearcher.filter = "(&$Filter)"
+        }
+        Write-Verbose "[Get-DomainDCSync] Get-DomainDCSync filter string: $($ObjectSearcher.filter)"
+
+        if ($PSBoundParameters['FindOne']) { $Results = $ObjectSearcher.FindOne() }
+        else { $Results = $ObjectSearcher.FindAll() }
+        $Results | Where-Object {$_} | ForEach-Object {
+            if ($PSBoundParameters['Raw']) {
+                # return raw result objects
+                $Object = $_
+                $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject.Raw')
+            }
+            else {
+                $Object = Convert-LDAPProperty -Properties $_.Properties
+                $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject')
+            }
+
+            $Object
+        }
+        if ($Results) {
+            try { $Results.dispose() }
+            catch {
+                Write-Verbose "[Get-DomainDCSync] Error disposing of the Results object: $_"
+            }
+        }
+        $ObjectSearcher.dispose()
+
     }
 }
 
