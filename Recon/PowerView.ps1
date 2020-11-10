@@ -8127,6 +8127,10 @@ Switch. Resolve GUIDs to their display names.
 
 A specific set of rights to return ('All', 'ResetPassword', 'WriteMembers').
 
+.PARAMETER OutputSDDL
+
+Output the SDDL string of the whole security descriptor into an output file for backup in case it needs to be restored
+
 .PARAMETER Domain
 
 Specifies the domain to use for the query, defaults to the current domain.
@@ -8216,6 +8220,9 @@ Custom PSObject with ACL entries.
         [Alias('Rights')]
         [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended')]
         $RightsFilter,
+
+        [String]
+        $OutputSDDL,
 
         [ValidateNotNullOrEmpty()]
         [String]
@@ -8350,7 +8357,19 @@ Custom PSObject with ACL entries.
                 }
 
                 try {
-                    New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Object['ntsecuritydescriptor'][0], 0 | ForEach-Object { if ($PSBoundParameters['Sacl']) {$_.SystemAcl} else {$_.DiscretionaryAcl} } | ForEach-Object {
+                    $SecurityDescriptor = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Object['ntsecuritydescriptor'][0], 0
+                    if ($PSBoundParameters['OutputSDDL']) {
+                        try {
+                           $SDDLObject = New-Object PSObject
+                           $SDDLObject | Add-Member "ObjectSID" $ObjectSid
+                           $SDDLObject | Add-Member "ObjectSDDL" $SecurityDescriptor.GetSddlForm(15)
+                           Export-Csv -InputObject $SDDLObject -Path $OutputSDDL
+                        }
+                        catch {
+                            Write-Warning "[Get-DomainObjectAcl] Unable to write SD information to $OutputSDDL"
+                        }
+                    }
+                    $SecurityDescriptor | ForEach-Object { if ($PSBoundParameters['Sacl']) {$_.SystemAcl} else {$_.DiscretionaryAcl} } | ForEach-Object {
                         $Continue = $False
                         $_ | Add-Member NoteProperty 'ObjectDN' $Object.distinguishedname[0]
                         $_ | Add-Member NoteProperty 'ObjectSID' $ObjectSid
@@ -20850,8 +20869,8 @@ Returns all enabled high value accounts.
 
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '')]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
-    [OutputType('PowerView.User')]
-    [OutputType('PowerView.User.Raw')]
+    [OutputType('PowerView.ADObject')]
+    [OutputType('PowerView.ADObject.Raw')]
     [CmdletBinding(DefaultParameterSetName = 'AllowDelegation')]
     Param (
         [Switch]
@@ -21082,8 +21101,7 @@ Get-DomainRBCD
 
 Returns the RBCD configuration for accounts in current domain.
 #>
-    [OutputType('PowerView.Computer')]
-    [OutputType('PowerView.Computer.Raw')]
+    [OutputType([PSObject])]
     [CmdletBinding()]
     Param (
         [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
@@ -21169,46 +21187,8 @@ Returns the RBCD configuration for accounts in current domain.
         if ($RBCDSearcher) {
             $IdentityFilter = ''
             $Filter = ''
-            $Identity | Where-Object {$_} | ForEach-Object {
-                $IdentityInstance = $_.Replace('(', '\28').Replace(')', '\29')
-                if ($IdentityInstance -match '^S-1-') {
-                    $IdentityFilter += "(objectsid=$IdentityInstance)"
-                }
-                elseif ($IdentityInstance -match '^(CN|OU|DC)=') {
-                    $IdentityFilter += "(distinguishedname=$IdentityInstance)"
-                    if ((-not $PSBoundParameters['Domain']) -and (-not $PSBoundParameters['SearchBase'])) {
-                        # if a -Domain isn't explicitly set, extract the object domain out of the distinguishedname
-                        #   and rebuild the domain searcher
-                        $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
-                        Write-Verbose "[Get-DomainRBCD] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
-                        $SearcherArguments['Domain'] = $IdentityDomain
-                        $RBCDSearcher = Get-DomainSearcher @SearcherArguments
-                        if (-not $ObjectSearcher) {
-                            Write-Warning "[Get-DomainRBCD] Unable to retrieve domain searcher for '$IdentityDomain'"
-                        }
-                    }
-                }
-                elseif ($IdentityInstance -imatch '^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}$') {
-                    $GuidByteString = (([Guid]$IdentityInstance).ToByteArray() | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
-                    $IdentityFilter += "(objectguid=$GuidByteString)"
-                }
-                elseif ($IdentityInstance.Contains('\')) {
-                    $ConvertedIdentityInstance = $IdentityInstance.Replace('\28', '(').Replace('\29', ')') | Convert-ADName -OutputType Canonical
-                    if ($ConvertedIdentityInstance) {
-                        $ObjectDomain = $ConvertedIdentityInstance.SubString(0, $ConvertedIdentityInstance.IndexOf('/'))
-                        $ObjectName = $IdentityInstance.Split('\')[1]
-                        $IdentityFilter += "(samAccountName=$ObjectName)"
-                        $SearcherArguments['Domain'] = $ObjectDomain
-                        Write-Verbose "[Get-DomainRBCD] Extracted domain '$ObjectDomain' from '$IdentityInstance'"
-                        $ObjectSearcher = Get-DomainSearcher @SearcherArguments
-                    }
-                }
-                elseif ($IdentityInstance.Contains('.')) {
-                    $IdentityFilter += "(|(samAccountName=$IdentityInstance)(name=$IdentityInstance)(dnshostname=$IdentityInstance))"
-                }
-                else {
-                    $IdentityFilter += "(|(samAccountName=$IdentityInstance)(name=$IdentityInstance)(displayname=$IdentityInstance))"
-                }
+            $Identity | Get-IdentityFilterString | ForEach-Object {
+                $IdentityFilter += $_
             }
             if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
                 $Filter += "(|$IdentityFilter)"
@@ -21220,7 +21200,7 @@ Returns the RBCD configuration for accounts in current domain.
                 Write-Verbose "[Get-DomainRBCD] Using additional LDAP filter: $LDAPFilter"
                 $Filter += "$LDAPFilter"
             }
-            f ($Filter -and $Filter -ne '') {
+            if ($Filter -and $Filter -ne '') {
                 $RBCDSearcher.filter = "(&$Filter)"
             }
             Write-Verbose "[Get-DomainRBCD] Get-DomainRBCD filter string: $($RBCDSearcher.filter)"
@@ -21269,6 +21249,343 @@ Returns the RBCD configuration for accounts in current domain.
         }
     }
 }
+
+function Set-DomainRBCD {
+<#
+.SYNOPSIS
+
+Configure resource-based constrained delegation for accounts.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: None  
+
+.PARAMETER Identity
+
+A SamAccountName (e.g. WINDOWS10$), DistinguishedName (e.g. CN=WINDOWS10,CN=Computers,DC=testlab,DC=local),
+SID (e.g. S-1-5-21-890171859-3433809279-3366196753-1124), GUID (e.g. 4f16b6bc-7010-4cbf-b628-f3cfe20f6994),
+or a dns host name (e.g. windows10.testlab.local). Wildcards accepted.
+
+.PARAMETER DelegateFrom
+
+The accounts that are going to be allowed to delegate to this account(s) specified by Identity.
+This can be a pipe '|' separated list.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER LDAPFilter
+
+Specifies an LDAP query string that is used to filter Active Directory objects.
+
+.PARAMETER Properties
+
+Specifies the properties of the output object to retrieve from the server.
+
+.PARAMETER SearchBase
+
+The LDAP source to search through, e.g. "LDAP://OU=secret,DC=testlab,DC=local"
+Useful for OU queries.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SearchScope
+
+Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
+
+.PARAMETER ResultPageSize
+
+Specifies the PageSize to set for the LDAP searcher object.
+
+.PARAMETER ServerTimeLimit
+
+Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
+
+.PARAMETER SecurityMasks
+
+Specifies an option for examining security information of a directory object.
+One of 'Dacl', 'Group', 'None', 'Owner', 'Sacl'.
+
+.PARAMETER Tombstone
+
+Switch. Specifies that the searcher should also return deleted/tombstoned objects.
+
+.PARAMETER FindOne
+
+Only return one result object.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.PARAMETER Raw
+
+Switch. Return raw results instead of translating the fields into a custom PSObject.
+
+.EXAMPLE
+
+Set-DomainRBCD Computer1 -DelegateFrom Computer2|Computer3
+
+Configured RBCD on Computer1 to allow Computer2 and Computer3 delegation rights.
+#>
+    [OutputType([bool])]
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Alias('SamAccountName', 'Name', 'DNSHostName')]
+        [String[]]
+        $Identity,
+
+        [String]
+        $DelegateFrom,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('Filter')]
+        [String]
+        $LDAPFilter,
+
+        [ValidateNotNullOrEmpty()]
+        [String[]]
+        $Properties,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('ADSPath')]
+        [String]
+        $SearchBase,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
+        [String]
+        $SearchScope = 'Subtree',
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ResultPageSize = 200,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ServerTimeLimit,
+
+        [ValidateSet('Dacl', 'Group', 'None', 'Owner', 'Sacl')]
+        [String]
+        $SecurityMasks,
+
+        [Switch]
+        $Tombstone,
+
+        [Alias('ReturnOne')]
+        [Switch]
+        $FindOne,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $Raw
+    )
+
+
+    BEGIN {
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
+        if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
+        if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
+        if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['SecurityMasks']) { $SearcherArguments['SecurityMasks'] = $SecurityMasks }
+        if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        $RBCDSearcher = Get-DomainSearcher @SearcherArguments
+    }
+
+    PROCESS {
+        #bind dynamic parameter to a friendly variable
+        if ($PSBoundParameters -and ($PSBoundParameters.Count -ne 0)) {
+            New-DynamicParameter -CreateVariables -BoundParameters $PSBoundParameters
+        }
+        if ($RBCDSearcher) {
+            $IdentityFilter = ''
+            $Filter = ''
+
+            # form SDDL string and resulting SD bytes
+            $SDDLString = ''
+            if ($PSBoundParameters['DelegateFrom']) {
+                $DelegateFilter = ''
+                $DelegateFrom.Split('|') | Get-IdentityFilterString | ForEach-Object {
+                    $DelegateFilter += $_
+                    Write-Verbose "[Set-DomainRBCD] Appending DelegateFilter: $_"
+                }
+
+                $RBCDSearcher.filter = "(|$DelegateFilter)"
+                Write-Verbose "[Set-DomainRBCD] Set-DomainRBCD filter string: $($RBCDSearcher.filter)"
+                $Results = $RBCDSearcher.FindAll()
+                if ($Results) {
+                    $SDDLString = 'O:BAD:'
+                }
+                $Results | Where-Object {$_} | ForEach-Object {
+                    $Object = Convert-LDAPProperty -Properties $_.Properties
+                    $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject')
+                    $SDDLString += "(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;$($Object.objectsid))"
+                    Write-Verbose "[Set-DomainRBCD] Appending to SDDL string: (A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;$($Object.objectsid))"
+                }
+                if ($Results) {
+                    try { $Results.dispose() }
+                    catch {
+                        Write-Verbose "[Set-DomainRBCD] Error disposing of the Results object: $_"
+                    }
+                }
+                Write-Verbose "[Set-DomainRBCD] Using SDDL string: $SDDLString"
+                $SD = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $SDDLString
+                $SDBytes = New-Object byte[] ($SD.BinaryLength)
+                $SD.GetBinaryForm($SDBytes, 0)
+
+            }
+            
+            $Identity | Get-IdentityFilterString | ForEach-Object {
+                $IdentityFilter += $_
+            }
+            if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
+                $Filter += "(|$IdentityFilter)"
+            }
+
+            if ($PSBoundParameters['LDAPFilter']) {
+                Write-Verbose "[Set-DomainRBCD] Using additional LDAP filter: $LDAPFilter"
+                $Filter += "$LDAPFilter"
+            }
+            if ($Filter -and $Filter -ne '') {
+                $RBCDSearcher.filter = "(&$Filter)"
+            }
+            Write-Verbose "[Set-DomainRBCD] Set-DomainRBCD filter string: $($RBCDSearcher.filter)"
+
+            if ($PSBoundParameters['FindOne']) { $Results = $RBCDSearcher.FindOne() }
+            else { $Results = $RBCDSearcher.FindAll() }
+            $Results | Where-Object {$_} | ForEach-Object {
+                $Object = $_
+                $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject.Raw')
+                if ($SDBytes) {
+                    $Entry = $Object.GetDirectoryEntry()
+                    try {
+                        Write-Verbose "[Set-DomainRBCD] Setting 'msds-allowedtoactonbehalfofotheridentity' to '$SDBytes' for object '$($Object.Properties.samaccountname)'"
+                        $Entry.put('msds-allowedtoactonbehalfofotheridentity', $SDBytes)
+                        $Entry.commitchanges()
+                    }
+                    catch {
+                        Write-Warning "[Set-DomainRBCD] Error setting/replacing properties for object '$($Object.Properties.samaccountname)' : $SDBytes"
+                    }
+
+                }
+            }
+            if ($Results) {
+                try { $Results.dispose() }
+                catch {
+                    Write-Verbose "[Set-DomainRBCD] Error disposing of the Results object: $_"
+                }
+            }
+            $RBCDSearcher.dispose()
+        }
+    }
+}
+
+function Get-IdentityFilterString {
+<#
+.SYNOPSIS
+
+Helper function to retrieve the IdentityFilter string to avoid code duplication.
+Pulled from @harmj0y's Get-DomainUser function.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: None  
+
+.PARAMETER Identity
+
+A SamAccountName (e.g. WINDOWS10$), DistinguishedName (e.g. CN=WINDOWS10,CN=Computers,DC=testlab,DC=local),
+SID (e.g. S-1-5-21-890171859-3433809279-3366196753-1124), GUID (e.g. 4f16b6bc-7010-4cbf-b628-f3cfe20f6994),
+or a dns host name (e.g. windows10.testlab.local). Wildcards accepted.
+
+.EXAMPLE
+
+Get-IdentityFilterString -Identity $Identity
+
+Returns an LDAP search string for provided identites
+#>
+    [OutputType([String])]
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Alias('SamAccountName', 'Name', 'DNSHostName')]
+        [String[]]
+        $Identity
+    )
+
+    BEGIN {
+        $SearcherArguments = @{}
+    }
+
+    PROCESS {
+        $IdentityFilter = ''
+        $Filter = ''
+        $Identity | Where-Object {$_} | ForEach-Object {
+            $IdentityInstance = $_.Replace('(', '\28').Replace(')', '\29')
+            if ($IdentityInstance -match '^S-1-') {
+                $IdentityFilter += "(objectsid=$IdentityInstance)"
+            }
+            elseif ($IdentityInstance -match '^(CN|OU|DC)=') {
+                $IdentityFilter += "(distinguishedname=$IdentityInstance)"
+                if ((-not $PSBoundParameters['Domain']) -and (-not $PSBoundParameters['SearchBase'])) {
+                    # if a -Domain isn't explicitly set, extract the object domain out of the distinguishedname
+                    #   and rebuild the domain searcher
+                    $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
+                    Write-Verbose "[Get-IdentityFilterString] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
+                    $SearcherArguments['Domain'] = $IdentityDomain
+                    if (-not $ObjectSearcher) {
+                        Write-Warning "[Get-IdentityFilterString] Unable to retrieve domain searcher for '$IdentityDomain'"
+                    }
+                }
+            }
+            elseif ($IdentityInstance -imatch '^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}$') {
+                $GuidByteString = (([Guid]$IdentityInstance).ToByteArray() | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
+                $IdentityFilter += "(objectguid=$GuidByteString)"
+            }
+            elseif ($IdentityInstance.Contains('\')) {
+                $ConvertedIdentityInstance = $IdentityInstance.Replace('\28', '(').Replace('\29', ')') | Convert-ADName -OutputType Canonical
+                if ($ConvertedIdentityInstance) {
+                    $ObjectDomain = $ConvertedIdentityInstance.SubString(0, $ConvertedIdentityInstance.IndexOf('/'))
+                    $ObjectName = $IdentityInstance.Split('\')[1]
+                    $IdentityFilter += "(samAccountName=$ObjectName)"
+                    $SearcherArguments['Domain'] = $ObjectDomain
+                    Write-Verbose "[Get-IdentityFilterString] Extracted domain '$ObjectDomain' from '$IdentityInstance'"
+                }
+            }
+            elseif ($IdentityInstance.Contains('.')) {
+                $IdentityFilter += "(|(samAccountName=$IdentityInstance)(name=$IdentityInstance)(dnshostname=$IdentityInstance))"
+            }
+            else {
+                $IdentityFilter += "(|(samAccountName=$IdentityInstance)(name=$IdentityInstance)(displayname=$IdentityInstance))"
+            }
+        }
+        if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
+            $Filter += "(|$IdentityFilter)"
+        }
+        $Filter
+    }
+}
+
 
 
 function Get-DomainDCSync {
@@ -21354,8 +21671,8 @@ Get-DomainDCSync
 
 Returns accounts that have DCSync privileges in current domain.
 #>
-    [OutputType('PowerView.Computer')]
-    [OutputType('PowerView.Computer.Raw')]
+    [OutputType('PowerView.ADObject')]
+    [OutputType('PowerView.ADObject.Raw')]
     [CmdletBinding()]
     Param (
         [Switch]
@@ -21566,6 +21883,220 @@ Returns accounts that have DCSync privileges in current domain.
         $ObjectSearcher.dispose()
 
     }
+}
+
+function Set-DomainObjectSD {
+<#
+.SYNOPSIS
+
+Returns the ACLs associated with a specific active directory object. By default
+the DACL for the object(s) is returned, but the SACL can be returned with -Sacl.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: Get-DomainSearcher
+
+.PARAMETER Identity
+
+A SamAccountName (e.g. harmj0y), DistinguishedName (e.g. CN=harmj0y,CN=Users,DC=testlab,DC=local),
+SID (e.g. S-1-5-21-890171859-3433809279-3366196753-1108), or GUID (e.g. 4c435dd7-dc58-4b14-9a5e-1fdb0e80d201).
+Wildcards accepted.
+
+.PARAMETER InputFile
+
+Input file containing the SD's to be restored in the CSV format that Get-DomainObjectSD outputs.
+
+.PARAMETER SDDLString
+
+SDDL String to use to restore the SD for Object(s) specified by Identity.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER LDAPFilter
+
+Specifies an LDAP query string that is used to filter Active Directory objects.
+
+.PARAMETER SearchBase
+
+The LDAP source to search through, e.g. "LDAP://OU=secret,DC=testlab,DC=local"
+Useful for OU queries.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SearchScope
+
+Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
+
+.PARAMETER ResultPageSize
+
+Specifies the PageSize to set for the LDAP searcher object.
+
+.PARAMETER ServerTimeLimit
+
+Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
+
+.PARAMETER Tombstone
+
+Switch. Specifies that the searcher should also return deleted/tombstoned objects.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+
+Set-DomainObjectAcl -Identity charlie.clark -Domain testlab.local -SDDLString "O:S-1-5-21-2042794111-3163024120-2630140754-512G:S-1-5-21-2042794111-3163024120-2630140754-512D:AI(OA;;RP;4c..."
+
+Set the SD for the charlie.clark user in the testlab.local domain to
+the SD string specified by SDDLString.
+
+.EXAMPLE
+
+Set-DomainObjectSD -InputFile .\backup-sds.csv
+
+Restore all of the SD's contained within the file .\backup-sds.csv.
+
+.OUTPUTS
+
+PowerView.ACL
+
+Custom PSObject with ACL entries.
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType('PowerView.ACL')]
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Alias('DistinguishedName', 'SamAccountName', 'Name')]
+        [String[]]
+        $Identity,
+
+        [String]
+        $InputFile,
+
+        [String]
+        $SDDLString,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('Filter')]
+        [String]
+        $LDAPFilter,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('ADSPath')]
+        [String]
+        $SearchBase,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
+        [String]
+        $SearchScope = 'Subtree',
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ResultPageSize = 200,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ServerTimeLimit,
+
+        [Switch]
+        $Tombstone,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    BEGIN {
+        $SearcherArguments = @{
+            'Properties' = 'samaccountname,ntsecuritydescriptor,distinguishedname,objectsid'
+        }
+
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
+        if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
+        if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        $Searcher = Get-DomainSearcher @SearcherArguments
+    }
+
+    PROCESS {
+        if ($Searcher) {
+            $RestoreTargets = @{}
+            $Filter = ''
+            if ($PSBoundParameters['InputFile']) {
+                try {
+                    Import-Csv $InputFile | ForEach-Object {
+                        $RestoreTargets.Add($_.ObjectSID, $_.ObjectSDDL)
+                    }
+                }
+                catch {
+                    Write-Warning "[Set-DomainObjectSD] Unable to read $InputFile"
+                }
+                $RestoreTargets.keys | Get-IdentityFilterString | ForEach-Object {
+                    $Filter += $_
+                }
+            } 
+            elseif ($Identity -and $SDDLString) {
+                $SDDLObject = New-Object PSObject
+                $SDDLObject | Add-Member "ObjectSID" $ObjectSid
+                $SDDLObject | Add-Member "ObjectSDDL" $SecurityDescriptor.GetSddlForm(15)
+            }
+            if ($Filter) {
+                $Searcher.filter = "(|$Filter)"
+                $Results = $Searcher.FindAll()
+                $Results | Where-Object {$_} | ForEach-Object {
+                    $Object = $_
+
+                    if ($Object.Properties.objectsid -and $Object.Properties.objectsid[0]) {
+                        $ObjectSid = (New-Object System.Security.Principal.SecurityIdentifier($Object.Properties.objectsid[0],0)).Value
+                    }
+                    else {
+                        $ObjectSid = $Null
+                    }
+                    if ($PSBoundParameters['InputFile']) {
+                        $SDDLString = $RestoreTargets.$ObjectSid
+                    }
+
+                    # Build Raw SD
+                    $SD = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $SDDLString
+                    $SDBytes = New-Object byte[] ($SD.BinaryLength)
+                    $SD.GetBinaryForm($SDBytes, 0)
+
+                    $Entry = $Object.GetDirectoryEntry()
+                    try {
+                        Write-Verbose "[Set-DomainObjectSD] Setting 'ntsecuritydescriptor' to '$SDBytes' for object '$($Object.Properties.samaccountname)'"
+                        $Entry.InvokeSet('ntsecuritydescriptor', $SDBytes)
+                        $Entry.commitchanges()
+                    }
+                    catch {
+                        Write-Warning "[Set-DomainObjectSD] Error setting security descriptor for object '$($Object.Properties.samaccountname)' : $SDBytes"
+                        Write-Warning "[Set-DomainObjectSD] Make sure you have Owner privileges"
+                    }
+
+                }
+            }
+        }
+    }
+
 }
 
 
