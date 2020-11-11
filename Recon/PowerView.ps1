@@ -3190,7 +3190,9 @@ A custom PSObject with LDAP hashtable properties translated.
                 # $ObjectProperties[$_] = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
                 $Descriptor = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
                 if ($Descriptor.Owner) {
-                    $ObjectProperties['Owner'] = $Descriptor.Owner
+                    $ObjectProperties['OwnerSID'] = $Descriptor.Owner
+                    $OwnerObject = Get-DomainObject $Descriptor.Owner
+                    $ObjectProperties['OwnerName'] = $OwnerObject.samaccountname
                 }
                 if ($Descriptor.Group) {
                     $ObjectProperties['Group'] = $Descriptor.Group
@@ -4951,6 +4953,10 @@ Switch. Return user accounts with "Do not require Kerberos preauthentication" se
 
 Return only user accounts that have not had a password change for at least the specified number of days.
 
+.PARAMETER Owner
+
+Return the owner information of the user object.
+
 .PARAMETER Domain
 
 Specifies the domain to use for the query, defaults to the current domain.
@@ -5139,6 +5145,9 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [Int]
         $PassLastSet,
 
+        [Switch]
+        $Owner,
+
         [ValidateNotNullOrEmpty()]
         [String]
         $Domain,
@@ -5205,12 +5214,14 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $SearcherArguments = @{}
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
+        if ($PSBoundParameters['Owner']) { $SearcherArguments['Properties'] = 'samaccountname,ntsecuritydescriptor,distinguishedname,objectsid' }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
         if ($PSBoundParameters['SecurityMasks']) { $SearcherArguments['SecurityMasks'] = $SecurityMasks }
+        if ($PSBoundParameters['Owner']) { $SearcherArguments['SecurityMasks'] = 'Owner' }
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
         $UserSearcher = Get-DomainSearcher @SearcherArguments
@@ -8127,10 +8138,6 @@ Switch. Resolve GUIDs to their display names.
 
 A specific set of rights to return ('All', 'ResetPassword', 'WriteMembers').
 
-.PARAMETER OutputSDDL
-
-Output the SDDL string of the whole security descriptor into an output file for backup in case it needs to be restored
-
 .PARAMETER Domain
 
 Specifies the domain to use for the query, defaults to the current domain.
@@ -8220,9 +8227,6 @@ Custom PSObject with ACL entries.
         [Alias('Rights')]
         [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended')]
         $RightsFilter,
-
-        [String]
-        $OutputSDDL,
 
         [ValidateNotNullOrEmpty()]
         [String]
@@ -8358,17 +8362,6 @@ Custom PSObject with ACL entries.
 
                 try {
                     $SecurityDescriptor = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Object['ntsecuritydescriptor'][0], 0
-                    if ($PSBoundParameters['OutputSDDL']) {
-                        try {
-                           $SDDLObject = New-Object PSObject
-                           $SDDLObject | Add-Member "ObjectSID" $ObjectSid
-                           $SDDLObject | Add-Member "ObjectSDDL" $SecurityDescriptor.GetSddlForm(15)
-                           Export-Csv -InputObject $SDDLObject -Path $OutputSDDL
-                        }
-                        catch {
-                            Write-Warning "[Get-DomainObjectAcl] Unable to write SD information to $OutputSDDL"
-                        }
-                    }
                     $SecurityDescriptor | ForEach-Object { if ($PSBoundParameters['Sacl']) {$_.SystemAcl} else {$_.DiscretionaryAcl} } | ForEach-Object {
                         $Continue = $False
                         $_ | Add-Member NoteProperty 'ObjectDN' $Object.distinguishedname[0]
@@ -21885,6 +21878,186 @@ Returns accounts that have DCSync privileges in current domain.
     }
 }
 
+function Get-DomainObjectSD {
+<#
+.SYNOPSIS
+
+Returns the ACLs associated with a specific active directory object. By default
+the DACL for the object(s) is returned, but the SACL can be returned with -Sacl.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: Get-DomainSearcher
+
+.PARAMETER Identity
+
+A SamAccountName (e.g. harmj0y), DistinguishedName (e.g. CN=harmj0y,CN=Users,DC=testlab,DC=local),
+SID (e.g. S-1-5-21-890171859-3433809279-3366196753-1108), or GUID (e.g. 4c435dd7-dc58-4b14-9a5e-1fdb0e80d201).
+Wildcards accepted.
+
+.PARAMETER OutFile
+
+Output file of the SD's to be backed up in the CSV format.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER SearchBase
+
+The LDAP source to search through, e.g. "LDAP://OU=secret,DC=testlab,DC=local"
+Useful for OU queries.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SearchScope
+
+Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
+
+.PARAMETER ResultPageSize
+
+Specifies the PageSize to set for the LDAP searcher object.
+
+.PARAMETER ServerTimeLimit
+
+Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
+
+.PARAMETER Tombstone
+
+Switch. Specifies that the searcher should also return deleted/tombstoned objects.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+
+Set-DomainObjectAcl -Identity charlie.clark -Domain testlab.local -SDDLString "O:S-1-5-21-2042794111-3163024120-2630140754-512G:S-1-5-21-2042794111-3163024120-2630140754-512D:AI(OA;;RP;4c..."
+
+Set the SD for the charlie.clark user in the testlab.local domain to
+the SD string specified by SDDLString.
+
+.EXAMPLE
+
+Set-DomainObjectSD -InputFile .\backup-sds.csv
+
+Restore all of the SD's contained within the file .\backup-sds.csv.
+
+.OUTPUTS
+
+PowerView.ACL
+
+Custom PSObject with ACL entries.
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType('PowerView.ACL')]
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Alias('DistinguishedName', 'SamAccountName', 'Name')]
+        [String[]]
+        $Identity,
+
+        [String]
+        $OutFile,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('ADSPath')]
+        [String]
+        $SearchBase,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
+        [String]
+        $SearchScope = 'Subtree',
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ResultPageSize = 200,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ServerTimeLimit,
+
+        [Switch]
+        $Tombstone,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    BEGIN {
+        $SearcherArguments = @{
+            'Properties' = 'samaccountname,ntsecuritydescriptor,distinguishedname,objectsid'
+        }
+
+        $SearcherArguments['SecurityMasks'] = 'Dacl'
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
+        if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
+        if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        $Searcher = Get-DomainSearcher @SearcherArguments
+    }
+
+    PROCESS {
+        if ($Searcher) {
+            $Filter = ''
+            $Identity | Get-IdentityFilterString | ForEach-Object {
+                $Filter += $_
+            }
+            Write-Verbose "[Get-DomainObjectSD] Using filter: $Filter"
+            if ($Filter) {
+                $Searcher.filter = "(|$Filter)"
+                $Objects = @()
+                $Results = $Searcher.FindAll()
+                $Results | Where-Object {$_} | ForEach-Object {
+                    $Object = $_.Properties
+
+                    if ($Object.objectsid -and $Object.objectsid[0]) {
+                        $ObjectSid = (New-Object System.Security.Principal.SecurityIdentifier($Object.objectsid[0],0)).Value
+                    }
+                    else {
+                        $ObjectSid = $Null
+                    }
+
+                    $SecurityDescriptor = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Object['ntsecuritydescriptor'][0], 0
+                    $SDDLObject = New-Object PSObject
+                    $SDDLObject | Add-Member "ObjectSID" $ObjectSid
+                    $SDDLObject | Add-Member "ObjectSDDL" $SecurityDescriptor.GetSddlForm(15)
+                    $Objects += $SDDLObject
+                    $SDDLObject
+                }
+                if ($PSBoundParameters['OutFile']) {
+                    try {
+                        $Objects | Export-Csv $OutFile
+                    }
+                    catch {
+                        Write-Warning "[Get-DomainObjectSD] Unable to write $OutFile"
+                    }
+                } 
+            }
+        }
+    }
+}
+
+
 function Set-DomainObjectSD {
 <#
 .SYNOPSIS
@@ -22027,6 +22200,7 @@ Custom PSObject with ACL entries.
             'Properties' = 'samaccountname,ntsecuritydescriptor,distinguishedname,objectsid'
         }
 
+        $SearcherArguments['SecurityMasks'] = 'Dacl'
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
