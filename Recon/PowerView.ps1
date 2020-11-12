@@ -22067,7 +22067,7 @@ Custom PSObject with ACL entries.
                     if ($Checks) {
                         $SDDLtoCheck = $Checks | Where-Object {$_.ObjectSID -eq $ObjectSid}
                         if ($SDDLtoCheck.ObjectSDDL -eq $SDDLObject.ObjectSDDL) {
-                            Write-Warning "[Get-DomainObjectSD] SD for $($Object.samaccountname) is the same as the one provided"
+                            Write-Verbose "[Get-DomainObjectSD] SD for $($Object.samaccountname) is the same as the one provided"
                         }
                         else {
                             Write-Warning "[Get-DomainObjectSD] SD for $($Object.samaccountname) is different to the one provided"
