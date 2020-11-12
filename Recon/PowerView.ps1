@@ -21910,6 +21910,10 @@ Wildcards accepted.
 
 Output file of the SD's to be backed up in the CSV format.
 
+.PARAMETER Check
+
+Check the SD with the provided SD and report if it's the same or different.
+
 .PARAMETER Domain
 
 Specifies the domain to use for the query, defaults to the current domain.
@@ -21975,6 +21979,9 @@ Custom PSObject with ACL entries.
 
         [String]
         $OutFile,
+
+        [String]
+        $Check,
 
         [ValidateNotNullOrEmpty()]
         [String]
@@ -22053,7 +22060,13 @@ Custom PSObject with ACL entries.
                     $SDDLObject | Add-Member "ObjectSID" $ObjectSid
                     $SDDLObject | Add-Member "ObjectSDDL" $SecurityDescriptor.GetSddlForm(15)
                     $Objects += $SDDLObject
-                    $SDDLObject
+                    if ($PSBoundParameters['Check'] -and $Check -eq $SDDLObject.ObjectSDDL) {
+                        Write-Warning "[Get-DomainObjectSD] SD for $($Object.samaccountname) is the same as the one provided"
+                    }
+                    else {
+                        Write-Warning "[Get-DomainObjectSD] SD for $($Object.samaccountname) is different to the one provided"
+                        $SDDLObject
+                    }
                 }
                 if ($PSBoundParameters['OutFile']) {
                     try {
