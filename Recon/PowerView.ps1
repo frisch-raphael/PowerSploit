@@ -21545,10 +21545,10 @@ Returns an LDAP search string for provided identites
                     #   and rebuild the domain searcher
                     $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
                     Write-Verbose "[Get-IdentityFilterString] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
-                    $SearcherArguments['Domain'] = $IdentityDomain
-                    if (-not $ObjectSearcher) {
-                        Write-Warning "[Get-IdentityFilterString] Unable to retrieve domain searcher for '$IdentityDomain'"
-                    }
+                    #$SearcherArguments['Domain'] = $IdentityDomain
+                    #if (-not $ObjectSearcher) {
+                        #Write-Warning "[Get-IdentityFilterString] Unable to retrieve domain searcher for '$IdentityDomain'"
+                    #}
                 }
             }
             elseif ($IdentityInstance -imatch '^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}$') {
@@ -21561,7 +21561,7 @@ Returns an LDAP search string for provided identites
                     $ObjectDomain = $ConvertedIdentityInstance.SubString(0, $ConvertedIdentityInstance.IndexOf('/'))
                     $ObjectName = $IdentityInstance.Split('\')[1]
                     $IdentityFilter += "(samAccountName=$ObjectName)"
-                    $SearcherArguments['Domain'] = $ObjectDomain
+                    #$SearcherArguments['Domain'] = $ObjectDomain
                     Write-Verbose "[Get-IdentityFilterString] Extracted domain '$ObjectDomain' from '$IdentityInstance'"
                 }
             }
@@ -21948,13 +21948,13 @@ Restore all of the SD's contained within the file .\backup-sds.csv.
 
 .OUTPUTS
 
-PowerView.ACL
+PSObject
 
 Custom PSObject with ACL entries.
 #>
 
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
-    [OutputType('PowerView.ACL')]
+    [OutputType([PSObject])]
     [CmdletBinding()]
     Param (
         [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
@@ -22046,7 +22046,7 @@ Custom PSObject with ACL entries.
                 }
                 if ($PSBoundParameters['OutFile']) {
                     try {
-                        $Objects | Export-Csv $OutFile
+                        $Objects | ForEach-Object { Export-Csv -InputObject $_ -Path $OutFile -Append }
                     }
                     catch {
                         Write-Warning "[Get-DomainObjectSD] Unable to write $OutFile"
