@@ -22037,12 +22037,17 @@ Custom PSObject with ACL entries.
     PROCESS {
         if ($Searcher) {
             $Filter = ''
+            $Checks = ''
             $Identity | Get-IdentityFilterString | ForEach-Object {
                 $Filter += $_
             }
-            Write-Verbose "[Get-DomainObjectSD] Using filter: $Filter"
+            if (!($Filter) -and $PSBoundParameters['Check'] -and (Test-Path -Path $Check -PathType Leaf)) {
+                $Checks = Import-Csv $Check
+                $Checks | ForEach-Object {$Filter += Get-IdentityFilterString $_.ObjectSID}
+            }
             if ($Filter) {
                 $Searcher.filter = "(|$Filter)"
+                Write-Verbose "[Get-DomainObjectSD] Using filter: $($Searcher.filter)"
                 $Objects = @()
                 $Results = $Searcher.FindAll()
                 $Results | Where-Object {$_} | ForEach-Object {
@@ -22059,13 +22064,28 @@ Custom PSObject with ACL entries.
                     $SDDLObject = New-Object PSObject
                     $SDDLObject | Add-Member "ObjectSID" $ObjectSid
                     $SDDLObject | Add-Member "ObjectSDDL" $SecurityDescriptor.GetSddlForm(15)
-                    $Objects += $SDDLObject
-                    if ($PSBoundParameters['Check'] -and $Check -eq $SDDLObject.ObjectSDDL) {
+                    if ($Checks) {
+                        $SDDLtoCheck = $Checks | Where-Object {$_.ObjectSID -eq $ObjectSid}
+                        if ($SDDLtoCheck.ObjectSDDL -eq $SDDLObject.ObjectSDDL) {
+                            Write-Warning "[Get-DomainObjectSD] SD for $($Object.samaccountname) is the same as the one provided"
+                        }
+                        else {
+                            Write-Warning "[Get-DomainObjectSD] SD for $($Object.samaccountname) is different to the one provided"
+                            $SDDLObject
+                            $Objects += $SDDLObject
+                        }
+                    }
+                    elseif ($PSBoundParameters['Check'] -and $Check -eq $SDDLObject.ObjectSDDL) {
                         Write-Warning "[Get-DomainObjectSD] SD for $($Object.samaccountname) is the same as the one provided"
                     }
-                    else {
+                    elseif ($PSBoundParameters['Check']) {
                         Write-Warning "[Get-DomainObjectSD] SD for $($Object.samaccountname) is different to the one provided"
                         $SDDLObject
+                        $Objects += $SDDLObject
+                    }
+                    else {
+                        $SDDLObject
+                        $Objects += $SDDLObject
                     }
                 }
                 if ($PSBoundParameters['OutFile']) {
