@@ -22241,9 +22241,9 @@ Custom PSObject with ACL entries.
                 }
             } 
             elseif ($Identity -and $SDDLString) {
-                $SDDLObject = New-Object PSObject
-                $SDDLObject | Add-Member "ObjectSID" $ObjectSid
-                $SDDLObject | Add-Member "ObjectSDDL" $SecurityDescriptor.GetSddlForm(15)
+                $Identity | Get-IdentityFilterString | ForEach-Object {
+                    $Filter += $_
+                }
             }
             if ($Filter) {
                 $Searcher.filter = "(|$Filter)"
