@@ -5214,7 +5214,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $SearcherArguments = @{}
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
-        if ($PSBoundParameters['Owner']) { $SearcherArguments['Properties'] = 'samaccountname,ntsecuritydescriptor,distinguishedname,objectsid' }
+        if ($PSBoundParameters['Owner']) { $SearcherArguments['Properties'] = '*' }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
@@ -21225,7 +21225,7 @@ Returns the RBCD configuration for accounts in current domain.
                     $Delegated = Get-DomainObject $_.SecurityIdentifier
                     $RBCDObject | Add-Member "DelegatedName" $Delegated.samaccountname
                     $RBCDObject | Add-Member "DelegatedType" $Delegated.samaccounttype
-                    $RBCDObject | Add-Member "DelegatedSID" $Delegated.objectsid
+                    $RBCDObject | Add-Member "DelegatedSID" $_.SecurityIdentifier
                     $RBCDObject | Add-Member "DelegatedAccountControl" $Delegated.useraccountcontrol
                     $RBCDObject | Add-Member "DelegatedDistinguishedName" $Delegated.distinguishedname
 
@@ -21263,6 +21263,10 @@ or a dns host name (e.g. windows10.testlab.local). Wildcards accepted.
 
 The accounts that are going to be allowed to delegate to this account(s) specified by Identity.
 This can be a pipe '|' separated list.
+
+.PARAMETER Clear
+
+Remove the contents of the msds-allowedtoactonbehalfofotheridentity attribute.
 
 .PARAMETER Domain
 
@@ -21335,6 +21339,9 @@ Configured RBCD on Computer1 to allow Computer2 and Computer3 delegation rights.
 
         [String]
         $DelegateFrom,
+
+        [Switch]
+        $Clear,
 
         [ValidateNotNullOrEmpty()]
         [String]
@@ -21449,6 +21456,7 @@ Configured RBCD on Computer1 to allow Computer2 and Computer3 delegation rights.
 
             }
             
+            
             $Identity | Get-IdentityFilterString | ForEach-Object {
                 $IdentityFilter += $_
             }
@@ -21470,18 +21478,21 @@ Configured RBCD on Computer1 to allow Computer2 and Computer3 delegation rights.
             $Results | Where-Object {$_} | ForEach-Object {
                 $Object = $_
                 $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject.Raw')
-                if ($SDBytes) {
-                    $Entry = $Object.GetDirectoryEntry()
-                    try {
-                        Write-Verbose "[Set-DomainRBCD] Setting 'msds-allowedtoactonbehalfofotheridentity' to '$SDBytes' for object '$($Object.Properties.samaccountname)'"
+                $Entry = $Object.GetDirectoryEntry()
+                try {
+                    Write-Verbose "[Set-DomainRBCD] Setting 'msds-allowedtoactonbehalfofotheridentity' to '$SDBytes' for object '$($Object.Properties.samaccountname)'"
+                    if ($SDBytes) {
                         $Entry.put('msds-allowedtoactonbehalfofotheridentity', $SDBytes)
-                        $Entry.commitchanges()
                     }
-                    catch {
-                        Write-Warning "[Set-DomainRBCD] Error setting/replacing properties for object '$($Object.Properties.samaccountname)' : $SDBytes"
+                    elseif ($PSBoundParameters['Clear']) {
+                        $Entry.Properties['msds-allowedtoactonbehalfofotheridentity'].Clear()
                     }
-
+                    $Entry.commitchanges()
                 }
+                catch {
+                    Write-Warning "[Set-DomainRBCD] Error setting/replacing properties for object '$($Object.Properties.samaccountname)' : $SDBytes"
+                }
+
             }
             if ($Results) {
                 try { $Results.dispose() }
