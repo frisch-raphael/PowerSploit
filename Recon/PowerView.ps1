@@ -22090,6 +22090,7 @@ Custom PSObject with ACL entries.
                 }
                 if ($PSBoundParameters['OutFile']) {
                     try {
+                        Write-Verbose "[Get-DomainObjectSD] Writing object SD information to $OutFile"
                         $Objects | ForEach-Object { Export-Csv -InputObject $_ -Path $OutFile -Append }
                     }
                     catch {
@@ -22262,6 +22263,7 @@ Custom PSObject with ACL entries.
             $Filter = ''
             if ($PSBoundParameters['InputFile']) {
                 try {
+                    Write-Verbose "[Set-DomainObjectSD] Reading provided input file: $InputFile"
                     Import-Csv $InputFile | ForEach-Object {
                         $RestoreTargets.Add($_.ObjectSID, $_.ObjectSDDL)
                     }
@@ -22274,6 +22276,7 @@ Custom PSObject with ACL entries.
                 }
             } 
             elseif ($Identity -and $SDDLString) {
+                Write-Verbose "[Set-DomainObjectSD] Setting provided identities: $Identity"
                 $Identity | Get-IdentityFilterString | ForEach-Object {
                     $Filter += $_
                 }
@@ -22295,6 +22298,7 @@ Custom PSObject with ACL entries.
                     }
 
                     # Build Raw SD
+                    Write-Verbose "[Set-DomainObjectSD] Building raw SD from SDDL string: $SDDLString"
                     $SD = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $SDDLString
                     $SDBytes = New-Object byte[] ($SD.BinaryLength)
                     $SD.GetBinaryForm($SDBytes, 0)
