@@ -3220,7 +3220,7 @@ A custom PSObject with LDAP hashtable properties translated.
                     $ObjectProperties[$_] = [datetime]::fromfiletime($Properties[$_][0])
                 }
             }
-            elseif ( ($_ -eq 'lastlogon') -or ($_ -eq 'lastlogontimestamp') -or ($_ -eq 'pwdlastset') -or ($_ -eq 'lastlogoff') -or ($_ -eq 'badPasswordTime') ) {
+            elseif ( ($_ -eq 'lastlogon') -or ($_ -eq 'lastlogontimestamp') -or ($_ -eq 'pwdlastset') -or ($_ -eq 'lastlogoff') -or ($_ -eq 'badPasswordTime')  -or ($_ -eq 'ms-mcs-admpwdexpirationtime')) {
                 # convert timestamps
                 if ($Properties[$_][0] -is [System.MarshalByRefObject]) {
                     # if we have a System.__ComObject
@@ -21758,10 +21758,11 @@ Returns accounts that have DCSync privileges in current domain.
 
     BEGIN {
         $SearcherArguments = @{}
-        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        $DNSearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain; $DNSearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
-        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server; $DNSearcherArguments['Server'] = $Server }
         if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
         if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
@@ -21772,10 +21773,8 @@ Returns accounts that have DCSync privileges in current domain.
     }
 
     PROCESS {
-        $DomainSID = Get-DomainSID
-        Write-Verbose "[Get-DomainDCSync] Retrieving the domain SID: $DomainSID"
-        $DomainDN = (Get-DomainObject $DomainSID).distinguishedname
-        Write-Verbose "[Get-DomainDCSync] Retrieving the domain distinguishedname: $DomainDN"
+        $DomainDN = Get-DomainDN @DNSearcherArguments
+        Write-Verbose "[Get-DomainDCSync] Retrieved the domain distinguishedname: $DomainDN"
 
         # Hash Table for storing DCSync privileges
         $Privs = @{}
@@ -21787,7 +21786,7 @@ Returns accounts that have DCSync privileges in current domain.
         }
 
         # Loop through ACL on the domain head
-        Get-DomainObjectACL $DomainDN -RightsFilter DCSync | ForEach-Object {
+        Get-DomainObjectACL $DomainDN -RightsFilter DCSync @SearcherArguments | ForEach-Object {
             $ACE = $_
             $SID = $ACE.SecurityIdentifier.Value
             $ADRights = $ACE.ActiveDirectoryRights
@@ -22333,6 +22332,93 @@ Custom PSObject with ACL entries.
     }
 
 }
+
+function Get-DomainDN {
+<#
+.SYNOPSIS
+
+Returns the distinguished name for the current domain or the specified domain.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: Get-DomainComputer  
+
+.DESCRIPTION
+
+Returns the distinguished name for the current domain or the specified domain by executing
+Get-DomainComputer with the -LDAPFilter set to (userAccountControl:1.2.840.113556.1.4.803:=8192)
+to search for domain controllers through LDAP. The SID of the returned domain controller
+is then extracted. Largely stolen from @harmj0y's Get-DomainSID.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+
+Get-DomainDN
+
+.EXAMPLE
+
+Get-DomainDN -Domain testlab.local
+
+.EXAMPLE
+
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
+Get-DomainDN -Credential $Cred
+
+.OUTPUTS
+
+String
+
+A string representing the specified domain distinguished name.
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType([String])]
+    [CmdletBinding()]
+    Param(
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    $SearcherArguments = @{
+        'LDAPFilter' = '(userAccountControl:1.2.840.113556.1.4.803:=8192)'
+    }
+    if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+    if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+    if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+
+    $DCDN = Get-DomainComputer @SearcherArguments -FindOne | Select-Object -First 1 -ExpandProperty distinguishedname
+
+    if ($DCDN) {
+        $DCDN.SubString($DCDN.IndexOf(',DC=')+1)
+    }
+    else {
+        Write-Verbose "[Get-DomainDN] Error extracting domain SID for '$Domain'"
+    }
+}
+
 
 
 
