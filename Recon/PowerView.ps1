@@ -6162,6 +6162,10 @@ Return computers in the specific AD Site name, wildcards accepted.
 
 Switch. Ping each host to ensure it's up before enumerating.
 
+.PARAMETER LastLogon
+
+Return computers that have logged on within a number of days.
+
 .PARAMETER Domain
 
 Specifies the domain to use for the query, defaults to the current domain.
@@ -6301,6 +6305,10 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
 
         [Switch]
         $Ping,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $LastLogon,
 
         [ValidateNotNullOrEmpty()]
         [String]
@@ -6457,6 +6465,11 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['SiteName']) {
                 Write-Verbose "[Get-DomainComputer] Searching for computers with site name: $SiteName"
                 $Filter += "(serverreferencebl=$SiteName)"
+            }
+            if ($PSBoundParameters['LastLogon']) {
+                Write-Verbose "[Get-DomainComputer] Searching for computer accounts that have logged on within the last $PSBoundParameters['LastLogon'] days"
+                $LogonDate = (Get-Date).AddDays(-$PSBoundParameters['LastLogon']).ToFileTime()
+                $Filter += "(lastlogon>=$LogonDate)"
             }
             if ($PSBoundParameters['LDAPFilter']) {
                 Write-Verbose "[Get-DomainComputer] Using additional LDAP filter: $LDAPFilter"
