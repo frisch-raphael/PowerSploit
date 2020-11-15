@@ -6166,6 +6166,18 @@ Switch. Ping each host to ensure it's up before enumerating.
 
 Return computers that have logged on within a number of days.
 
+.PARAMETER HasLAPS
+
+Switch. Return computers with LAPS enabled.
+
+.PARAMETER NoLAPS
+
+Switch. Return computers without LAPS enabled.
+
+.PARAMETER CanReadLAPS
+
+Switch. Return computers where the LAPS password is readable.
+
 .PARAMETER Domain
 
 Specifies the domain to use for the query, defaults to the current domain.
@@ -6310,6 +6322,15 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [Int]
         $LastLogon,
 
+        [Switch]
+        $HasLAPS,
+
+        [Switch]
+        $NoLAPS,
+
+        [Switch]
+        $CanReadLAPS,
+
         [ValidateNotNullOrEmpty()]
         [String]
         $Domain,
@@ -6385,6 +6406,10 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
         $CompSearcher = Get-DomainSearcher @SearcherArguments
+
+        $DNSearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $DNSearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $DNSearcherArguments['Server'] = $Server }
     }
 
     PROCESS {
@@ -6470,6 +6495,38 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 Write-Verbose "[Get-DomainComputer] Searching for computer accounts that have logged on within the last $PSBoundParameters['LastLogon'] days"
                 $LogonDate = (Get-Date).AddDays(-$PSBoundParameters['LastLogon']).ToFileTime()
                 $Filter += "(lastlogon>=$LogonDate)"
+            }
+            if (($PSBoundParameters['HasLAPS']) -or ($PSBoundParameters['NoLAPS']) -or ($PSBoundParameters['CanReadLAPS'])) {
+                $SchemaDN = "CN=Schema,CN=Configuration,$(Get-DomainDN @DNSearcherArguments)"
+                $AttrFilter = ''
+                Write-Verbose "[Get-DomainComputer] Using distinguished name: $SchemaDN"
+                if ($PSBoundParameters['HasLAPS']) {
+                    # Searching for attribute name, which can differ as per pingcastle by @vletoux
+                    # https://github.com/vletoux/pingcastle/blob/master/Scanners/LAPSBitLocker.cs
+                    Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(name=ms-*-admpwd*)" -Properties 'name' @SearcherArguments | select -expand name | ForEach-Object {
+                        Write-Verbose "[Get-DomainComputer] Searching for attribute: $_"
+                        $AttrFilter += "($_=*)"
+                    }
+                    if ($AttrFilter) { $Filter += "(|$AttrFilter)" }
+                }
+                if ($PSBoundParameters['NoLAPS']) {
+                    # Searching for attribute name, which can differ as per pingcastle by @vletoux
+                    # https://github.com/vletoux/pingcastle/blob/master/Scanners/LAPSBitLocker.cs
+                    Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(name=ms-*-admpwd*)" -Properties 'name' @SearcherArguments | select -expand name | ForEach-Object {
+                        Write-Verbose "[Get-DomainComputer] Searching for attribute: $_"
+                        $AttrFilter += "(!($_=*))"
+                    }
+                    if ($AttrFilter) { $Filter += "(&$AttrFilter)" }
+                }
+                if ($PSBoundParameters['CanReadLAPS']) {
+                    # Searching for attribute name, which can differ as per pingcastle by @vletoux
+                    # https://github.com/vletoux/pingcastle/blob/master/Scanners/LAPSBitLocker.cs
+                    Get-DomainObject -SearchBase $SchemaDN -LDAPFilter "(name=ms-*-admpwd)" -Properties 'name' @SearcherArguments | select -expand name | ForEach-Object {
+                        Write-Verbose "[Get-DomainComputer] Searching for attribute: $_"
+                        $AttrFilter += "($_=*)"
+                    }
+                    if ($AttrFilter) { $Filter += "(|$AttrFilter)" }
+                }
             }
             if ($PSBoundParameters['LDAPFilter']) {
                 Write-Verbose "[Get-DomainComputer] Using additional LDAP filter: $LDAPFilter"
