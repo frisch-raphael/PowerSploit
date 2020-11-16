@@ -8295,7 +8295,7 @@ Custom PSObject with ACL entries.
 
         [String]
         [Alias('Rights')]
-        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended')]
+        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended', 'ReadLAPS')]
         $RightsFilter,
 
         [ValidateNotNullOrEmpty()]
@@ -8441,8 +8441,9 @@ Custom PSObject with ACL entries.
                             $GuidFilter = Switch ($RightsFilter) {
                                 'ResetPassword' { @('00299570-246d-11d0-a768-00aa006e0529') }
                                 'WriteMembers' { @('bf9679c0-0de6-11d0-a285-00aa003049e2') }
-                                'DCSync' { @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', 'GenericAll') }
+                                'DCSync' { @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', 'GenericAll', 'ExtendedRight') }
                                 'AllExtended' { 'ExtendedRight' }
+                                'ReadLAPS' { @('ExtendedRight', 'GenericAll', 'WriteDacl') }
                                 'All' { 'GenericAll' }
                                 Default { '00000000-0000-0000-0000-000000000000' }
                             }
@@ -8452,11 +8453,17 @@ Custom PSObject with ACL entries.
                             elseif ($_.AceQualifier -eq 'AccessAllowed' -and !($_.ObjectAceType) -and !($_.InheritedObjectAceType) -and (($_.ActiveDirectoryRights -match $GuidFilter) -or ($GuidFilter -contains $_.ActiveDirectoryRights))) {
                                 $Continue = $True
                             }
+                            elseif (($_.AceQualifier -eq 'AccessAllowed') -and !($_.ObjectAceType) -and !($_.InheritedObjectAceType)) {
+                                ForEach ($Guid in $GuidFilter) {
+                                    if ($_.ActiveDirectoryRights -match $Guid) {
+                                        $Continue = $True
+                                    }
+                                }
+                            }
                         }
                         else {
                             $Continue = $True
                         }
-
                         if ($Continue) {
                             if ($GUIDs) {
                                 # if we're resolving GUIDs, map them them to the resolved hash table
@@ -8717,7 +8724,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty,
 
-        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync')]
+        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended')]
         [String]
         $Rights = 'All',
 
@@ -8781,6 +8788,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
                     # 'DS-Replication-Get-Changes-In-Filtered-Set' = 89e95b76-444d-4c62-991a-0facbeda640c
                     #   when applied to a domain's ACL, allows for the use of DCSync
                     'DCSync' { '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', '89e95b76-444d-4c62-991a-0facbeda640c'}
+                    'AllExtended' { 'ExtendedRight' }
                 }
             }
 
@@ -8790,12 +8798,16 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
                 try {
                     $Identity = [System.Security.Principal.IdentityReference] ([System.Security.Principal.SecurityIdentifier]$PrincipalObject.objectsid)
 
-                    if ($GUIDs) {
+                    if ($GUIDs -and !($GUIDs -eq 'ExtendedRight')) {
                         ForEach ($GUID in $GUIDs) {
                             $NewGUID = New-Object Guid $GUID
                             $ADRights = [System.DirectoryServices.ActiveDirectoryRights] 'ExtendedRight'
                             $ACEs += New-Object System.DirectoryServices.ActiveDirectoryAccessRule $Identity, $ADRights, $ControlType, $NewGUID, $InheritanceType
                         }
+                    }
+                    elseif ($GUIDs -eq 'ExtendedRight') {
+                        $ADRights = [System.DirectoryServices.ActiveDirectoryRights] 'ExtendedRight'
+                        $ACEs += New-Object System.DirectoryServices.ActiveDirectoryAccessRule $Identity, $ADRights, $ControlType, $InheritanceType
                     }
                     else {
                         # deault to GenericAll rights
@@ -21847,7 +21859,7 @@ Returns accounts that have DCSync privileges in current domain.
             $ACE = $_
             $SID = $ACE.SecurityIdentifier.Value
             $ADRights = $ACE.ActiveDirectoryRights
-            if ($ADRights -eq 'GenericAll') {
+            if ($ADRights -eq 'GenericAll' -or ($ADRights -eq 'ExtendedRight' -and !($ACE.ObjectAceType) -and !($ACE.InheritedObjectAceType))) {
                 $Privs.$SID = @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2')
             }
             else {
@@ -22473,6 +22485,204 @@ A string representing the specified domain distinguished name.
     }
     else {
         Write-Verbose "[Get-DomainDN] Error extracting domain SID for '$Domain'"
+    }
+}
+
+function Get-DomainLAPSReaders {
+<#
+.SYNOPSIS
+
+Finds accounts that can view the LAPS password for machine accounts.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: None  
+
+.PARAMETER Identity
+
+A SamAccountName (e.g. WINDOWS10$), DistinguishedName (e.g. CN=WINDOWS10,CN=Computers,DC=testlab,DC=local),
+SID (e.g. S-1-5-21-890171859-3433809279-3366196753-1124), GUID (e.g. 4f16b6bc-7010-4cbf-b628-f3cfe20f6994),
+or a dns host name (e.g. windows10.testlab.local). Wildcards accepted.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER LDAPFilter
+
+Specifies an LDAP query string that is used to filter Active Directory objects.
+
+.PARAMETER Properties
+
+Specifies the properties of the output object to retrieve from the server.
+
+.PARAMETER SearchBase
+
+The LDAP source to search through, e.g. "LDAP://OU=secret,DC=testlab,DC=local"
+Useful for OU queries.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SearchScope
+
+Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
+
+.PARAMETER ResultPageSize
+
+Specifies the PageSize to set for the LDAP searcher object.
+
+.PARAMETER ServerTimeLimit
+
+Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
+
+.PARAMETER SecurityMasks
+
+Specifies an option for examining security information of a directory object.
+One of 'Dacl', 'Group', 'None', 'Owner', 'Sacl'.
+
+.PARAMETER Tombstone
+
+Switch. Specifies that the searcher should also return deleted/tombstoned objects.
+
+.PARAMETER FindOne
+
+Only return one result object.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+
+Get-DomainLAPSReaders
+
+Returns the LAPS reader information in current domain.
+#>
+    [OutputType([PSObject])]
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Alias('SamAccountName', 'Name', 'DNSHostName')]
+        [String[]]
+        $Identity,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('Filter')]
+        [String]
+        $LDAPFilter,
+
+        [ValidateNotNullOrEmpty()]
+        [String[]]
+        $Properties,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('ADSPath')]
+        [String]
+        $SearchBase,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
+        [String]
+        $SearchScope = 'Subtree',
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ResultPageSize = 200,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ServerTimeLimit,
+
+        [ValidateSet('Dacl', 'Group', 'None', 'Owner', 'Sacl')]
+        [String]
+        $SecurityMasks,
+
+        [Switch]
+        $Tombstone,
+
+        [Alias('ReturnOne')]
+        [Switch]
+        $FindOne,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+
+    BEGIN {
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Properties']) { $SearcherArguments['Properties'] = $Properties }
+        if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
+        if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
+        if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['SecurityMasks']) { $SearcherArguments['SecurityMasks'] = $SecurityMasks }
+        if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        $Searcher = Get-DomainSearcher @SearcherArguments
+    }
+
+    PROCESS {
+        $Filter = ''
+        $ACLs = @()
+        if (!($Identity)) {
+            $Identity = (Get-DomainComputer -HasLAPS @SearcherArguments).objectsid
+        }
+        $Identity | Get-DomainObjectAcl -RightsFilter ReadLAPS @SearcherArguments | ForEach-Object {
+            if (!($Filter) -or ($Filter -notmatch $_.ObjectSID)) {
+                Write-Verbose "[Get-DomainLAPSReaders] Adding $($_.ObjectSID) to filter"
+                $Filter += "(objectsid=$($_.ObjectSID))"
+            }
+            if ($Filter -notmatch $_.SecurityIdentifier) {
+                Write-Verbose "[Get-DomainLAPSReaders] Adding $($_.SecurityIdentifier) to filter"
+                $Filter += "(objectsid=$($_.SecurityIdentifier))"
+            }
+            $ACLs += $_
+        }
+        if ($Filter) {
+            $Accounts = @()
+            $Searcher.filter = "(|$Filter)"
+            Write-Verbose "[Get-DomainLAPSReaders] Using filter: $($Searcher.filter)"
+            $Results = $Searcher.FindAll()
+            $Results | Where-Object {$_} | ForEach-Object {
+                $Accounts += $_.Properties
+            }
+
+            $ACLs | ForEach-Object {
+                $ObjectSID = $_.ObjectSID
+                $PrincipalSID = $_.SecurityIdentifier
+                $ADRights = $_.ActiveDirectoryRights
+                $Object = $Accounts | ?{(New-Object System.Security.Principal.SecurityIdentifier($_.objectsid[0],0)).Value -eq $ObjectSID}
+                $Principal = $Accounts | ?{(New-Object System.Security.Principal.SecurityIdentifier($_.objectsid[0],0)).Value -eq $PrincipalSID}
+                $OutObject = New-Object PSObject
+                if ($Object) {
+                    $OutObject | Add-Member "ObjectName" $Object.samaccountname[0]
+                    $OutObject | Add-Member "ObjectType" ($Object.samaccounttype[0] -as $SamAccountTypeEnum)
+                }
+                $OutObject | Add-Member "ObjectSID" $ObjectSID
+                $OutObject | Add-Member "ActiveDirectoryRights" $ADRights
+                if ($Principal) {
+                    $OutObject | Add-Member "PrincipalName" $Principal.samaccountname[0]
+                    $OutObject | Add-Member "PrincipalType" ($Principal.samaccounttype[0] -as $SamAccountTypeEnum)
+                }
+                $OutObject | Add-Member "PrincipalSID" $PrincipalSID
+                $OutObject
+            }
+        }
     }
 }
 
