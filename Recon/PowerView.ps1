@@ -5341,8 +5341,12 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['PassExpired']) {
                 Write-Verbose '[Get-DomainUser] Ignoring users that have passwords to never expire'
                 $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=65536))'
-                Write-Verbose "[Get-DomainUser] Getting the maximum password age from the domain policy"
+                Write-Verbose '[Get-DomainUser] Getting the maximum password age from the domain policy'
                 $MaximumAge = [Int]((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
+                if ($MaximumAge -lt 1) {
+                    Write-Warning '[Get-DomainUser] Password expiry disabled in domain policy, no users will be returned'
+                    return
+                }
             }
             elseif ($PSBoundParameters['NoPassExpiry']) {
                 Write-Verbose '[Get-DomainUser] Searching for users whose passwords never expire'
