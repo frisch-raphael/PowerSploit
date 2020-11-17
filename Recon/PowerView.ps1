@@ -5342,7 +5342,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 Write-Verbose '[Get-DomainUser] Ignoring users that have passwords to never expire'
                 $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=65536))'
                 Write-Verbose "[Get-DomainUser] Getting the maximum password age from the domain policy"
-                $MaximumAge = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
+                $MaximumAge = [Int]((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
             }
             elseif ($PSBoundParameters['NoPassExpiry']) {
                 Write-Verbose '[Get-DomainUser] Searching for users whose passwords never expire'
@@ -5350,7 +5350,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             }
             if ($PSBoundParameters['PassNotExpired']) {
                 Write-Verbose "[Get-DomainUser] Getting the maximum password age from the domain policy"
-                $MaximumAge = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
+                $MaximumAge = [Int]((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
             }
             if ($PSBoundParameters['AllowDelegation']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who can be delegated'
@@ -5422,6 +5422,9 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                         if ($PwdLastSet -gt $ExpireTime) {
                             $Continue = $False
                         }
+                    }
+                    else {
+                        $Continue = $False
                     }
                 }
                 elseif ($PSBoundParameters['PassNotExpired'] -and (($_.Properties.useraccountcontrol[0] -band 65536) -ne 65536)) {
