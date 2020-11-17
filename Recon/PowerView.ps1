@@ -5413,7 +5413,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             $Results | Where-Object {$_} | ForEach-Object {
                 $Continue = $True
                 if ($PSBoundParameters['PassExpired']) {
-                    if ($MaximumAge -ne 0) {
+                    if ($MaximumAge -gt 0) {
                         $PwdLastSet = $_.Properties.pwdlastset[0]
                         if ($PwdLastSet -eq 0) {
                             $PwdLastSet = $_.Properties.whencreated[0]
@@ -5425,7 +5425,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                     }
                 }
                 elseif ($PSBoundParameters['PassNotExpired'] -and (($_.Properties.useraccountcontrol[0] -band 65536) -ne 65536)) {
-                    if ($MaximumAge -ne 0) {
+                    if ($MaximumAge -gt 0) {
                         $PwdLastSet = $_.Properties.pwdlastset[0]
                         if ($PwdLastSet -eq 0) {
                             $PwdLastSet = $_.Properties.whencreated[0]
