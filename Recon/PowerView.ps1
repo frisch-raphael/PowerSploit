@@ -5256,6 +5256,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($UserSearcher) {
             $IdentityFilter = ''
             $Filter = ''
+            $MaximumAge = $Null
             $Identity | Where-Object {$_} | ForEach-Object {
                 $IdentityInstance = $_.Replace('(', '\28').Replace(')', '\29')
                 if ($IdentityInstance -match '^S-1-') {
@@ -5340,10 +5341,16 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['PassExpired']) {
                 Write-Verbose '[Get-DomainUser] Ignoring users that have passwords to never expire'
                 $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=65536))'
+                Write-Verbose "[Get-DomainUser] Getting the maximum password age from the domain policy"
+                $MaximumAge = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
             }
             elseif ($PSBoundParameters['NoPassExpiry']) {
                 Write-Verbose '[Get-DomainUser] Searching for users whose passwords never expire'
                 $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=65536)'
+            }
+            if ($PSBoundParameters['PassNotExpired']) {
+                Write-Verbose "[Get-DomainUser] Getting the maximum password age from the domain policy"
+                $MaximumAge = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
             }
             if ($PSBoundParameters['AllowDelegation']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who can be delegated'
@@ -5406,8 +5413,6 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             $Results | Where-Object {$_} | ForEach-Object {
                 $Continue = $True
                 if ($PSBoundParameters['PassExpired']) {
-                    # need to get the maximum password age from the domain policy
-                    $MaximumAge = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
                     if ($MaximumAge -ne 0) {
                         $PwdLastSet = $_.Properties.pwdlastset[0]
                         if ($PwdLastSet -eq 0) {
@@ -5420,9 +5425,6 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                     }
                 }
                 elseif ($PSBoundParameters['PassNotExpired'] -and (($_.Properties.useraccountcontrol[0] -band 65536) -ne 65536)) {
-                    
-                    # need to get the maximum password age from the domain policy
-                    $MaximumAge = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
                     if ($MaximumAge -ne 0) {
                         $PwdLastSet = $_.Properties.pwdlastset[0]
                         if ($PwdLastSet -eq 0) {
