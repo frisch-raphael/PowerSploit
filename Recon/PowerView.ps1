@@ -4921,6 +4921,14 @@ Switch. Return users that are currently locked.
 
 Switch. Return users that are currently unlocked.
 
+.PARAMETER PassExired
+
+Switch. Return users whose password has expired.
+
+.PARAMETER PassNotExpired
+
+Switch. Return users whose password has not expired.
+
 .PARAMETER AllowDelegation
 
 Switch. Return user accounts that are not marked as 'sensitive and not allowed for delegation'
@@ -4929,7 +4937,7 @@ Switch. Return user accounts that are not marked as 'sensitive and not allowed f
 
 Switch. Return user accounts that are marked as 'sensitive and not allowed for delegation'
 
-.PARAMETER PassNotExpire
+.PARAMETER NoPassExpiry
 
 Switch. Return users whose passwords do not expire.
 
@@ -5120,13 +5128,19 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $Unlocked,
 
         [Switch]
+        $PassExpired,
+
+        [Switch]
+        $PassNotExpired,
+
+        [Switch]
         $AllowDelegation,
 
         [Switch]
         $DisallowDelegation,
 
         [Switch]
-        $PassNotExpire,
+        $NoPassExpiry,
 
         [Switch]
         $Unconstrained,
@@ -5225,6 +5239,12 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
         $UserSearcher = Get-DomainSearcher @SearcherArguments
+
+        $PolicyArguments = @{}
+        if ($PSBoundParameters['Domain']) { $PolicyArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $PolicyArguments['Server'] = $Server }
+        if ($PSBoundParameters['ServerTimeLimit']) { $PolicyArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['Credential']) { $PolicyArguments['Credential'] = $Credential }
     }
 
     PROCESS {
@@ -5296,7 +5316,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['Locked']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who are locked'
                 # need to get the lockout duration from the domain policy
-                $Duration = ((Get-DomainPolicy -Policy Domain).SystemAccess).LockoutDuration
+                $Duration = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).LockoutDuration
                 if ($Duration -eq -1) {
                     $LockoutTime = 1
                 }
@@ -5308,7 +5328,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             elseif ($PSBoundParameters['Unlocked']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who are unlocked'
                 # need to get the lockout duration from the domain policy
-                $Duration = ((Get-DomainPolicy -Policy Domain).SystemAccess).LockoutDuration
+                $Duration = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).LockoutDuration
                 if ($Duration -eq -1) {
                     $LockoutTime = 1
                 }
@@ -5317,7 +5337,14 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 }
                 $Filter += "(!(lockoutTime>=$LockoutTime))"
             }
-
+            if ($PSBoundParameters['PassExpired']) {
+                Write-Verbose '[Get-DomainUser] Ignoring users that have passwords to never expire'
+                $Filter += '(!(userAccountControl:1.2.840.113556.1.4.803:=65536))'
+            }
+            elseif ($PSBoundParameters['NoPassExpiry']) {
+                Write-Verbose '[Get-DomainUser] Searching for users whose passwords never expire'
+                $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=65536)'
+            }
             if ($PSBoundParameters['AllowDelegation']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who can be delegated'
                 # negation of "Accounts that are sensitive and not trusted for delegation"
@@ -5326,10 +5353,6 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             elseif ($PSBoundParameters['DisallowDelegation']) {
                 Write-Verbose '[Get-DomainUser] Searching for users who are sensitive and not trusted for delegation'
                 $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=1048576)'
-            }
-            if ($PSBoundParameters['PassNotExpire']) {
-                Write-Verbose '[Get-DomainUser] Searching for users whose passwords never expire'
-                $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=65536)'
             }
             if ($PSBoundParameters['Unconstrained']) {
                 Write-Verbose '[Get-DomainUser] Searching for users configured for unconstrained delegation'
@@ -5381,16 +5404,48 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['FindOne']) { $Results = $UserSearcher.FindOne() }
             else { $Results = $UserSearcher.FindAll() }
             $Results | Where-Object {$_} | ForEach-Object {
-                if ($PSBoundParameters['Raw']) {
-                    # return raw result objects
-                    $User = $_
-                    $User.PSObject.TypeNames.Insert(0, 'PowerView.User.Raw')
+                $Continue = $True
+                if ($PSBoundParameters['PassExpired']) {
+                    # need to get the maximum password age from the domain policy
+                    $MaximumAge = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
+                    if ($MaximumAge -ne 0) {
+                        $PwdLastSet = $_.Properties.pwdlastset[0]
+                        if ($PwdLastSet -eq 0) {
+                            $PwdLastSet = $_.Properties.whencreated[0]
+                        }
+                        $ExpireTime = (Get-Date).AddDays(-$MaximumAge).ToFileTimeUtc()
+                        if ($PwdLastSet -gt $ExpireTime) {
+                            $Continue = $False
+                        }
+                    }
                 }
-                else {
-                    $User = Convert-LDAPProperty -Properties $_.Properties
-                    $User.PSObject.TypeNames.Insert(0, 'PowerView.User')
+                elseif ($PSBoundParameters['PassNotExpired'] -and (($_.Properties.useraccountcontrol[0] -band 65536) -ne 65536)) {
+                    
+                    # need to get the maximum password age from the domain policy
+                    $MaximumAge = ((Get-DomainPolicy -Policy Domain @PolicyArguments).SystemAccess).MaximumPasswordAge
+                    if ($MaximumAge -ne 0) {
+                        $PwdLastSet = $_.Properties.pwdlastset[0]
+                        if ($PwdLastSet -eq 0) {
+                            $PwdLastSet = $_.Properties.whencreated[0]
+                        }
+                        $ExpireTime = (Get-Date).AddDays(-$MaximumAge).ToFileTimeUtc()
+                        if ($PwdLastSet -le $ExpireTime) {
+                            $Continue = $False
+                        }
+                    }
                 }
-                $User
+                if ($Continue) {
+                    if ($PSBoundParameters['Raw']) {
+                        # return raw result objects
+                        $User = $_
+                        $User.PSObject.TypeNames.Insert(0, 'PowerView.User.Raw')
+                    }
+                    else {
+                        $User = Convert-LDAPProperty -Properties $_.Properties
+                        $User.PSObject.TypeNames.Insert(0, 'PowerView.User')
+                    }
+                    $User
+                }
             }
             if ($Results) {
                 try { $Results.dispose() }
