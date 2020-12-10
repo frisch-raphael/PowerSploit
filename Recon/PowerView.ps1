@@ -4957,6 +4957,10 @@ Switch. Return user accounts that are configured to allow resource-based constra
 
 Switch. Return user accounts with "Do not require Kerberos preauthentication" set.
 
+.PARAMETER PassNotRequired
+
+Switch. Return user accounts with PASSWD_NOTREQD set.
+
 .PARAMETER PassLastSet
 
 Return only user accounts that have not had a password change for at least the specified number of days.
@@ -5154,6 +5158,9 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         [Alias('KerberosPreauthNotRequired', 'NoPreauth')]
         [Switch]
         $PreauthNotRequired,
+
+        [Switch]
+        $PassNotRequired,
 
         [ValidateRange(1, 10000)]
         [Int]
@@ -5384,6 +5391,10 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['PreauthNotRequired']) {
                 Write-Verbose '[Get-DomainUser] Searching for user accounts that do not require kerberos preauthenticate'
                 $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=4194304)'
+            }
+            if ($PSBoundParameters['PassNotRequired']) {
+                Write-Verbose '[Get-DomainUser] Searching for user accounts that have PASSWD_NOTREQD set'
+                $Filter += '(userAccountControl:1.2.840.113556.1.4.803:=32)'
             }
             if ($PSBoundParameters['PassLastSet']) {
                 Write-Verbose "[Get-DomainUser] Searching for user accounts that have not had a password change for at least $PSBoundParameters['PassLastSet'] days"
