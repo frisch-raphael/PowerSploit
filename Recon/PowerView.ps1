@@ -21099,7 +21099,7 @@ Returns all enabled high value accounts.
             Get-DomainGroupMember $AdminGroup -Recurse | ?{$_.MemberObjectClass -ne 'group'} | ForEach-Object {
                 if (((!($Users)) -And (!($Computers))) -Or ((($Users) -And ($_.MemberObjectClass -eq 'user')) -Or (($Computers) -And ($_.MemberObjectClass -eq 'computer')))) {
                     $MemberName = $_.MemberName
-                    if (($Check.Count -eq 0 ) -Or (!($Check.Contains($MemberName)))) {
+                    if (($MemberName) -and (($Check.Count -eq 0 ) -Or (!($Check.Contains($MemberName))))) {
                         $IdentityFilter += "(samaccountname=$MemberName)"
                         $Check += $MemberName
                     }
@@ -21969,7 +21969,7 @@ Returns accounts that have DCSync privileges in current domain.
                         if ($PSBoundParameters['Groups'] -and !($Check -contains $ObjectSID)) {
                             $IdentityFilter += "(objectsid=$ObjectSID)"
                         }
-                        $Object | Get-DomainGroupMember -Recurse | ForEach-Object {
+                        $Object | Get-DomainGroupMember -Recurse @SearcherArguments | ForEach-Object {
                             $MemberSID = $_.MemberSID
                             if ($_.MemberObjectClass -ne 'group' -and !($Check -contains $MemberSID)) {
                                 if (($NoType) -Or ((($PSBoundParameters['Users']) -And ($_.MemberObjectClass -eq 'user')) -Or (($PSBoundParameters['Computers']) -And ($_.MemberObjectClass -eq 'computer')))) {
@@ -22742,6 +22742,17 @@ Returns the LAPS reader information in current domain.
                 if ($Principal) {
                     $OutObject | Add-Member "PrincipalName" $Principal.samaccountname[0]
                     $OutObject | Add-Member "PrincipalType" ($Principal.samaccounttype[0] -as $SamAccountTypeEnum)
+                    if ($OutObject.PrincipalType -eq 'GROUP_OBJECT' -or $OutObject.PrincipalType -eq 'ALIAS_OBJECT') {
+                       $PrincipalMembers  = @()
+                        $Principal | Get-DomainGroupMember -Recurse @SearcherArguments | ForEach-Object {
+                            $Member = $_
+                            $Member
+                            if ($Member.MemberObjectClass -ne 'group') {
+                                $PrincipalMembers += $Member
+                            }
+                        }
+                        $OutObject | Add-Member "RecursivePrincipalMembers" $PrincipalMembers
+                    }
                 }
                 $OutObject | Add-Member "PrincipalSID" $PrincipalSID
                 $OutObject
