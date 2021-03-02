@@ -11983,7 +11983,8 @@ http://richardspowershellblog.wordpress.com/2008/05/25/system-directoryservices-
         if ($Group) {
             ForEach ($Member in $Members) {
                 if ($Member -match '.+\\.+') {
-                    $ContextArguments['Identity'] = $Member
+                    $ContextArguments['Identity'] = ($Member -split '\\')[1]
+                    $ContextArguments['Domain'] = ($Member -split '\\')[0]
                     $UserContext = Get-PrincipalContext @ContextArguments
                     if ($UserContext) {
                         $UserIdentity = $UserContext.Identity
@@ -21107,7 +21108,7 @@ Returns all enabled high value accounts.
     PROCESS {
 
         foreach ($AdminGroup in $AdminGroups) {
-            Get-DomainGroupMember $AdminGroup -Recurse | ?{$_.MemberObjectClass -ne 'group'} | ForEach-Object {
+            Get-DomainGroupMember $AdminGroup -Recurse @SearcherArguments | ?{$_.MemberObjectClass -ne 'group'} | ForEach-Object {
                 if (((!($Users)) -And (!($Computers))) -Or ((($Users) -And ($_.MemberObjectClass -eq 'user')) -Or (($Computers) -And ($_.MemberObjectClass -eq 'computer')))) {
                     $MemberName = $_.MemberName
                     if (($MemberName) -and (($Check.Count -eq 0 ) -Or (!($Check.Contains($MemberName))))) {
