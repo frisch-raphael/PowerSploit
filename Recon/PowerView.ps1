@@ -6908,6 +6908,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 }
                 elseif ($IdentityInstance -imatch '^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}$') {
                     $GuidByteString = (([Guid]$IdentityInstance).ToByteArray() | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
+                    Write-Output "$GuidByteString"
                     $IdentityFilter += "(objectguid=$GuidByteString)"
                 }
                 elseif ($IdentityInstance.Contains('\')) {
@@ -21614,12 +21615,17 @@ Configured RBCD on Computer1 to allow Computer2 and Computer3 delegation rights.
 
             }
             
-            
+            $IdentityParts = $Identity -split '\\'
+            if ($IdentityParts.length -gt 1) {
+                $SearcherArguments['Domain'] = $IdentityParts[0]
+                $Identity = $IdentityParts[1]
+            }
+            $IdentitySearcher = Get-DomainSearcher @SearcherArguments
             $Identity | Get-IdentityFilterString | ForEach-Object {
                 $IdentityFilter += $_
             }
             if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
-                $Filter += "(|$IdentityFilter)"
+                $Filter = "(|$IdentityFilter)"
             }
 
             if ($PSBoundParameters['LDAPFilter']) {
@@ -21627,12 +21633,12 @@ Configured RBCD on Computer1 to allow Computer2 and Computer3 delegation rights.
                 $Filter += "$LDAPFilter"
             }
             if ($Filter -and $Filter -ne '') {
-                $RBCDSearcher.filter = "(&$Filter)"
+                $IdentitySearcher.filter = "(&$Filter)"
             }
             Write-Verbose "[Set-DomainRBCD] Set-DomainRBCD filter string: $($RBCDSearcher.filter)"
 
             if ($PSBoundParameters['FindOne']) { $Results = $RBCDSearcher.FindOne() }
-            else { $Results = $RBCDSearcher.FindAll() }
+            else { $Results = $IdentitySearcher.FindAll() }
             $Results | Where-Object {$_} | ForEach-Object {
                 $Object = $_
                 $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject.Raw')
