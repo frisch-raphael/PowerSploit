@@ -22779,6 +22779,172 @@ Returns the LAPS reader information in current domain.
     }
 }
 
+function Get-DomainEnrollmentServers {
+<#
+.SYNOPSIS
+
+Returns the certificate enrollment servers for the current domain or the specified domain.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause  
+Required Dependencies: Get-DomainObject, Get-DomainDN
+
+.DESCRIPTION
+
+Returns the certificate enrollment servers for the current domain or the specified domain by searching
+CN=Configuration,[DomainDN] for (objectCategory=pKIEnrollmentService) as described in
+@harmj0y and @tifkin's Certified_Pre-Owned (https://www.specterops.io/assets/resources/Certified_Pre-Owned.pdf).
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+
+Get-DomainEnrollmentServers
+
+.EXAMPLE
+
+Get-DomainEnrollmentServers -Domain testlab.local
+
+.EXAMPLE
+
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
+Get-DomainEnrollmentServers -Credential $Cred
+
+.OUTPUTS
+
+PS Objects representing the specified domain enrollment servers.
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType([String])]
+    [CmdletBinding()]
+    Param(
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    $SearcherArguments = @{}
+    if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+    if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+    if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+
+    $DomainDN = Get-DomainDN @SearcherArguments
+
+    if ($DomainDN) {
+        Write-Verbose "[Get-DomainEnrollmentServers] Got domain DN: $DomainDN"
+    }
+    else {
+        Write-Verbose "[Get-DomainEnrollmentServers] Error extracting domain DN for '$Domain'"
+    }
+
+    Get-DomainObject -SearchBase "CN=Configuration,$DomainDN" -LDAPFilter "(objectCategory=pKIEnrollmentService)" @SearcherArguments
+}
+
+function Get-DomainCACertificates {
+<#
+.SYNOPSIS
+
+Returns the CA certificates for the current domain or the specified domain.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: Get-DomainObject, Get-DomainDN
+
+.DESCRIPTION
+
+Returns the CA certificates for the current domain or the specified domain by searching
+CN=Configuration,[DomainDN] for (objectCategory=pKIEnrollmentService) as described in
+@harmj0y and @tifkin's Certified_Pre-Owned (https://www.specterops.io/assets/resources/Certified_Pre-Owned.pdf).
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+
+Get-DomainCACertificates
+
+.EXAMPLE
+
+ Get-DomainCACertificates -Domain testlab.local
+
+.EXAMPLE
+
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
+ Get-DomainCACertificates -Credential $Cred
+
+.OUTPUTS
+
+PS Objects representing the specified domain CA certificates.
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType([String])]
+    [CmdletBinding()]
+    Param(
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    $SearcherArguments = @{}
+    if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+    if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+    if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+
+    $DomainDN = Get-DomainDN @SearcherArguments
+
+    if ($DomainDN) {
+        Write-Verbose "[Get-DomainCACertificates] Got domain DN: $DomainDN"
+    }
+    else {
+        Write-Verbose "[Get-DomainCACertificates] Error extracting domain DN for '$Domain'"
+    }
+
+    Get-DomainObject -SearchBase "CN=Configuration,$DomainDN" -LDAPFilter "(objectCategory=certificationAuthority)" @SearcherArguments
+}
+
 
 
 
