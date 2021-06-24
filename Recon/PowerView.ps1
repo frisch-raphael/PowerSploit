@@ -22897,13 +22897,13 @@ Get-DomainCACertificates
 
 .EXAMPLE
 
- Get-DomainCACertificates -Domain testlab.local
+Get-DomainCACertificates -Domain testlab.local
 
 .EXAMPLE
 
 $SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
 $Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
- Get-DomainCACertificates -Credential $Cred
+Get-DomainCACertificates -Credential $Cred
 
 .OUTPUTS
 
@@ -22945,6 +22945,83 @@ PS Objects representing the specified domain CA certificates.
     Get-DomainObject -SearchBase "CN=Configuration,$DomainDN" -LDAPFilter "(objectCategory=certificationAuthority)" @SearcherArguments
 }
 
+function Get-DomainSQLInstances {
+<#
+.SYNOPSIS
+
+Returns a list of SQL instances for the current domain or the specified domain usable with PowerUPSQL cmdlets.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: Get-DomainObject, Get-DomainDN
+
+.DESCRIPTION
+
+Returns a list of SQL instances for the current domain or the specified domain by searching
+for (serviceprincipalname=MSSQLSvc*) and modifying the relevent SPNs to be directly usable with
+PowerUpSQL cmdlets.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+
+Get-DomainSQLInstances
+
+.EXAMPLE
+
+Get-DomainSQLInstances -Domain testlab.local
+
+.EXAMPLE
+
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
+Get-DomainSQLInstances -Credential $Cred
+
+.OUTPUTS
+
+Strings
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType([String])]
+    [CmdletBinding()]
+    Param(
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    $SearcherArguments = @{}
+    if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+    if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+    if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+
+    Get-DomainObject -LDAPFilter "(serviceprincipalname=MSSQLSvc*)" @SearcherArguments | select -expand serviceprincipalname | Where-Object {
+        $_ -match "MSSQLSvc" 
+    } | Foreach-Object {
+        ($_ -split '/')[1] -replace ':',','
+    }
+}
 
 
 
