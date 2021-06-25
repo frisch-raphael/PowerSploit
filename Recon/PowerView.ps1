@@ -23023,6 +23023,233 @@ Strings
     }
 }
 
+function Add-DomainAltSecurityIdentity {
+<#
+.SYNOPSIS
+
+Adds a value to the altSecurityIdentities AD attribute.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: Set-DomainObject, Get-DomainDN, Get-IdentityFilterString
+
+.DESCRIPTION
+
+Adds a value to the altSecurityIdentites AD attribute while ensuring the current values remain the same.
+
+.PARAMETER Identity
+
+A SamAccountName (e.g. WINDOWS10$), DistinguishedName (e.g. CN=WINDOWS10,CN=Computers,DC=testlab,DC=local),
+SID (e.g. S-1-5-21-890171859-3433809279-3366196753-1124), GUID (e.g. 4f16b6bc-7010-4cbf-b628-f3cfe20f6994),
+or a dns host name (e.g. windows10.testlab.local). Wildcards accepted.
+
+.PARAMETER Type
+
+The type of identity to add (Certificate or Kerberos).
+
+.PARAMETER Issuer
+
+The certificate issuer, if a Certificate has been specified.
+
+.PARAMETER Subject
+
+The certificate subject, if a certificate has been specified.
+
+.PARAMETER Account
+
+The external Kerberos account to add, if Kerberos has been specified.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SearchBase
+
+The LDAP source to search through, e.g. "LDAP://OU=secret,DC=testlab,DC=local"
+Useful for OU queries.
+
+.PARAMETER SearchScope
+
+Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
+
+.PARAMETER ResultPageSize
+
+Specifies the PageSize to set for the LDAP searcher object.
+
+.PARAMETER ServerTimeLimit
+
+Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
+
+.PARAMETER Tombstone
+
+Switch. Specifies that the searcher should also return deleted/tombstoned objects.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.EXAMPLE
+
+Add-DomainAltSecurityIdentity
+
+.EXAMPLE
+
+Add-DomainAltSecurityIdentity -Domain testlab.local
+
+.EXAMPLE
+
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
+Add-DomainAltSecurityIdentity -Credential $Cred
+
+.OUTPUTS
+
+Nothing
+
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType([String])]
+    [CmdletBinding()]
+    Param(
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Alias('DistinguishedName', 'SamAccountName', 'Name')]
+        [String[]]
+        $Identity,
+
+        [ValidateSet('Certificate', 'Kerberos')]
+        [String]
+        $Type = 'Certificate',
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Issuer,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Subject,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Account,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('ADSPath')]
+        [String]
+        $SearchBase,
+
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
+        [String]
+        $SearchScope = 'Subtree',
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ResultPageSize = 200,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ServerTimeLimit,
+
+        [Switch]
+        $Tombstone,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    BEGIN {
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
+        if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
+        if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
+        if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        $Searcher = Get-DomainSearcher @SearcherArguments
+        $DomainDNArguments = @{}
+        if ($PSBoundParameters['Domain']) { $DomainDNArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $DomainDNArguments['Server'] = $Server }
+        if ($PSBoundParameters['Credential']) { $DomainDNArguments['Credential'] = $Credential }
+    }
+
+
+    PROCESS {
+        $Filter = ''
+        if ($Identity) {
+            Write-Verbose "[Add-DomainAltSecurityIdentity] Setting provided identities: $Identity"
+            $Identity | Get-IdentityFilterString | ForEach-Object {
+                $Filter += $_
+            }
+        }
+
+        $AltIDString = ''
+        if ($PSBoundParameters['Type'] -eq 'Certificate') {
+            $DomainDN = Get-DomainDN @DomainDNArguments
+            $DomainDNSplit = $DomainDN -split ','
+            [array]::Reverse($DomainDNSplit)
+            $ReversedDomainDN = $DomainDNSplit -join ','
+
+            $AltIDString = 'X509:'
+            if ($PSBoundParameters['Issuer']) {
+                $AltIDString += "<I>$ReversedDomainDN,$Issuer"
+            }
+            if ($PSBoundParameters['Subject']) {
+                $AltIDString += "<S>$ReversedDomainDN,$Subject"
+            }
+            else {
+                Write-Error "[Add-DomainAltSecurityIdentity] Certificate altSecurityIdentity requires a Subject"
+                return
+            }
+        }
+        elseif ($PSBoundParameters['Account']) {
+            $AltIDString = "Kerberos:$Account"
+        }
+        else {
+            Write-Error "[Add-DomainAltSecurityIdentity] A -Type must be set"
+            return
+        }
+
+        Write-Verbose "[Add-DomainAltSecurityIdentity] Using Alternate Identity string: $AltIDString"
+
+
+        if ($Filter) {
+            $Searcher.filter = "(|$Filter)"
+            $Results = $Searcher.FindAll()
+            $Results | Where-Object {$_} | ForEach-Object {
+                $Props = $_.Properties
+                if ($Props.keys -contains 'altsecurityidentities') {
+                    $AltIDs = $Props['altsecurityidentities']
+                }
+                else {
+                    $AltIDs = @()
+                }
+
+                $AltIDs += $AltIDString
+
+                Set-DomainObject $Props['samaccountname'] -Set @{'altsecurityidentities'=$AltIDs}
+            }
+        }
+    }
+}
+
 
 
 ########################################################
