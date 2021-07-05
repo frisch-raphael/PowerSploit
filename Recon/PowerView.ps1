@@ -3472,7 +3472,7 @@ System.DirectoryServices.DirectorySearcher
                 $BindServer = ($DomainObject.PdcRoleOwner).Name
             }
             [System.Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
-            Write-Verbose "[Invoke-LDAPSQuery] Connecting to $($BindServer):636"
+            Write-Verbose "[Get-DomainSearcher] Connecting to $($BindServer):636"
             $Searcher = New-Object -TypeName System.DirectoryServices.Protocols.LdapConnection -ArgumentList "$($BindServer):636"
             $Searcher.SessionOptions.SecureSocketLayer = $true;
             $Searcher.SessionOptions.VerifyServerCertificate = { $true }
@@ -5531,9 +5531,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             }
             if ($Results) {
                 try { $Results.dispose() }
-                catch {
-                    Write-Verbose "[Get-DomainUser] Error disposing of the Results object: $_"
-                }
+                catch { }
             }
             $UserSearcher.dispose()
         }
@@ -23592,7 +23590,7 @@ String
             $Value = $Parts[$i].SubString(0,$Parts[$i].IndexOf(')'))
             if ($Value.Length -gt 0) {
                 $OutValueHash = @{}
-                for ($c=0; $c -lt (Get-Random -Maximum $($Value.Length)); $c++) {
+                for ($c=0; $c -lt (Get-Random -Maximum $($Value.Length) -Minimum 1); $c++) {
                     $Index = Get-Random -Maximum $($Value.Length - 1)
                     if (($OutValueHash.keys | Measure-Object).Count -ne 0) {
                         if ($OutValueHash.keys -contains $Index) {
