@@ -20250,6 +20250,8 @@ Custom PSObject with translated domain API trust result fields.
         if ($PsCmdlet.ParameterSetName -eq 'LDAP') {
             # if we're searching for domain trusts through LDAP/ADSI
             $TrustSearcher = Get-DomainSearcher @LdapSearcherArguments
+            if ($PSBoundParameters['SSL']) { $NetSearcherArguments['SSL'] = $SSL }
+            if ($PSBoundParameters['Obfuscate']) {$NetSearcherArguments['Obfuscate'] = $Obfuscate }
             $SourceSID = Get-DomainSID @NetSearcherArguments
 
             if ($TrustSearcher) {
