@@ -20221,11 +20221,17 @@ Custom PSObject with translated domain API trust result fields.
         if ($PSBoundParameters['Credential']) { $LdapSearcherArguments['Credential'] = $Credential }
         if ($PSBoundParameters['SSL']) { $LdapSearcherArguments['SSL'] = $SSL }
         if ($PSBoundParameters['Obfuscate']) {$LdapSearcherArguments['Obfuscate'] = $Obfuscate }
+
+        $NetSearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $LdapSearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $LdapSearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['SSL']) { $NetSearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$NetSearcherArguments['Obfuscate'] = $Obfuscate }
+
     }
 
     PROCESS {
         if ($PsCmdlet.ParameterSetName -ne 'API') {
-            $NetSearcherArguments = @{}
             if ($Domain -and $Domain.Trim() -ne '') {
                 $SourceDomain = $Domain
             }
@@ -20249,94 +20255,84 @@ Custom PSObject with translated domain API trust result fields.
 
         if ($PsCmdlet.ParameterSetName -eq 'LDAP') {
             # if we're searching for domain trusts through LDAP/ADSI
-            $TrustSearcher = Get-DomainSearcher @LdapSearcherArguments
-            if ($PSBoundParameters['SSL']) { $NetSearcherArguments['SSL'] = $SSL }
-            if ($PSBoundParameters['Obfuscate']) {$NetSearcherArguments['Obfuscate'] = $Obfuscate }
             $SourceSID = Get-DomainSID @NetSearcherArguments
 
-            if ($TrustSearcher) {
 
-                #$TrustSearcher.Filter = '(objectClass=trustedDomain)'
-
-                #if ($PSBoundParameters['FindOne']) { $Results = $TrustSearcher.FindOne() }
-                #else { $Results = $TrustSearcher.FindAll() }
-                $Results = Invoke-LDAPQuery @LdapSearcherArguments -LDAPFilter "(objectClass=trustedDomain)"
-                $Results | Where-Object {$_} | ForEach-Object {
-                    if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
-                        $Props = @{}
-                        foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                            if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or ($a -eq 'securityidentifier')) {
-                                $Props[$a] = $_.Attributes[$a]
+            $Results = Invoke-LDAPQuery @LdapSearcherArguments -LDAPFilter "(objectClass=trustedDomain)"
+            $Results | Where-Object {$_} | ForEach-Object {
+                if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                    $Props = @{}
+                    foreach ($a in $_.Attributes.Keys | Sort-Object) {
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or ($a -eq 'securityidentifier')) {
+                            $Props[$a] = $_.Attributes[$a]
+                        }
+                        else {
+                            $Values = @()
+                            foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
+                                $Values += [System.Text.Encoding]::UTF8.GetString($v)
                             }
-                            else {
-                                $Values = @()
-                                foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
-                                    $Values += [System.Text.Encoding]::UTF8.GetString($v)
-                                }
-                                $Props[$a] = $Values
-                            }
+                            $Props[$a] = $Values
                         }
                     }
-                    else {
-                        $Props = $_.Properties
-                    }
-
-                    $DomainTrust = New-Object PSObject
-
-                    $TrustAttrib = @()
-                    $TrustAttrib += $TrustAttributes.Keys | Where-Object { $Props.trustattributes[0] -band $_ } | ForEach-Object { $TrustAttributes[$_] }
-
-                    $Direction = Switch ($Props.trustdirection) {
-                        0 { 'Disabled' }
-                        1 { 'Inbound' }
-                        2 { 'Outbound' }
-                        3 { 'Bidirectional' }
-                    }
-
-                    $TrustType = Switch ($Props.trusttype) {
-                        1 { 'WINDOWS_NON_ACTIVE_DIRECTORY' }
-                        2 { 'WINDOWS_ACTIVE_DIRECTORY' }
-                        3 { 'MIT' }
-                    }
-
-                    $Distinguishedname = $Props.distinguishedname[0]
-                    $SourceNameIndex = $Distinguishedname.IndexOf('DC=')
-                    if ($SourceNameIndex) {
-                        $SourceDomain = $($Distinguishedname.SubString($SourceNameIndex)) -replace 'DC=','' -replace ',','.'
-                    }
-                    else {
-                        $SourceDomain = ""
-                    }
-
-                    $TargetNameIndex = $Distinguishedname.IndexOf(',CN=System')
-                    if ($SourceNameIndex) {
-                        $TargetDomain = $Distinguishedname.SubString(3, $TargetNameIndex-3)
-                    }
-                    else {
-                        $TargetDomain = ""
-                    }
-
-                    $ObjectGuid = New-Object Guid @(,$Props.objectguid[0])
-                    $TargetSID = (New-Object System.Security.Principal.SecurityIdentifier($Props.securityidentifier[0],0)).Value
-
-                    $DomainTrust | Add-Member Noteproperty 'SourceName' $SourceDomain
-                    $DomainTrust | Add-Member Noteproperty 'TargetName' $Props.name[0]
-                    # $DomainTrust | Add-Member Noteproperty 'TargetGuid' "{$ObjectGuid}"
-                    $DomainTrust | Add-Member Noteproperty 'TrustType' $TrustType
-                    $DomainTrust | Add-Member Noteproperty 'TrustAttributes' $($TrustAttrib -join ',')
-                    $DomainTrust | Add-Member Noteproperty 'TrustDirection' "$Direction"
-                    $DomainTrust | Add-Member Noteproperty 'WhenCreated' $Props.whencreated[0]
-                    $DomainTrust | Add-Member Noteproperty 'WhenChanged' $Props.whenchanged[0]
-                    $DomainTrust.PSObject.TypeNames.Insert(0, 'PowerView.DomainTrust.LDAP')
-                    $DomainTrust
                 }
-                if ($Results) {
-                    try { $Results.dispose() }
-                    catch {
-                        Write-Verbose "[Get-DomainTrust] Error disposing of the Results object: $_"
-                    }
+                else {
+                    $Props = $_.Properties
                 }
-                $TrustSearcher.dispose()
+
+                $DomainTrust = New-Object PSObject
+
+                $TrustAttrib = @()
+                $TrustAttrib += $TrustAttributes.Keys | Where-Object { $Props.trustattributes[0] -band $_ } | ForEach-Object { $TrustAttributes[$_] }
+
+                $Direction = Switch ($Props.trustdirection) {
+                    0 { 'Disabled' }
+                    1 { 'Inbound' }
+                    2 { 'Outbound' }
+                    3 { 'Bidirectional' }
+                }
+
+                $TrustType = Switch ($Props.trusttype) {
+                    1 { 'WINDOWS_NON_ACTIVE_DIRECTORY' }
+                    2 { 'WINDOWS_ACTIVE_DIRECTORY' }
+                    3 { 'MIT' }
+                }
+
+                $Distinguishedname = $Props.distinguishedname[0]
+                $SourceNameIndex = $Distinguishedname.IndexOf('DC=')
+                if ($SourceNameIndex) {
+                    $SourceDomain = $($Distinguishedname.SubString($SourceNameIndex)) -replace 'DC=','' -replace ',','.'
+                }
+                else {
+                    $SourceDomain = ""
+                }
+
+                $TargetNameIndex = $Distinguishedname.IndexOf(',CN=System')
+                if ($SourceNameIndex) {
+                    $TargetDomain = $Distinguishedname.SubString(3, $TargetNameIndex-3)
+                }
+                else {
+                    $TargetDomain = ""
+                }
+
+                $ObjectGuid = New-Object Guid @(,$Props.objectguid[0])
+                $TargetSID = (New-Object System.Security.Principal.SecurityIdentifier($Props.securityidentifier[0],0)).Value
+
+                $DomainTrust | Add-Member Noteproperty 'SourceName' $SourceDomain
+                $DomainTrust | Add-Member Noteproperty 'TargetName' $Props.name[0]
+                # $DomainTrust | Add-Member Noteproperty 'TargetGuid' "{$ObjectGuid}"
+                $DomainTrust | Add-Member Noteproperty 'TrustType' $TrustType
+                $DomainTrust | Add-Member Noteproperty 'TrustAttributes' $($TrustAttrib -join ',')
+                $DomainTrust | Add-Member Noteproperty 'TrustDirection' "$Direction"
+                $DomainTrust | Add-Member Noteproperty 'WhenCreated' $Props.whencreated[0]
+                $DomainTrust | Add-Member Noteproperty 'WhenChanged' $Props.whenchanged[0]
+                $DomainTrust.PSObject.TypeNames.Insert(0, 'PowerView.DomainTrust.LDAP')
+                $DomainTrust
+            }
+            if ($Results) {
+                try { $Results.dispose() }
+                catch {
+                    Write-Verbose "[Get-DomainTrust] Error disposing of the Results object: $_"
+                }
             }
         }
         elseif ($PsCmdlet.ParameterSetName -eq 'API') {
