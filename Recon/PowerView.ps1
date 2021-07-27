@@ -20050,6 +20050,14 @@ Only return one result object.
 A [Management.Automation.PSCredential] object of alternate credentials
 for connection to the target domain.
 
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
 .EXAMPLE
 
 Get-DomainTrust
@@ -20163,7 +20171,13 @@ Custom PSObject with translated domain API trust result fields.
         [Parameter(ParameterSetName = 'LDAP')]
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate
     )
 
     BEGIN {
@@ -20192,6 +20206,8 @@ Custom PSObject with translated domain API trust result fields.
         if ($PSBoundParameters['ServerTimeLimit']) { $LdapSearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
         if ($PSBoundParameters['Tombstone']) { $LdapSearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $LdapSearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $LdapSearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$LdapSearcherArguments['Obfuscate'] = $Obfuscate }
     }
 
     PROCESS {
@@ -20225,12 +20241,31 @@ Custom PSObject with translated domain API trust result fields.
 
             if ($TrustSearcher) {
 
-                $TrustSearcher.Filter = '(objectClass=trustedDomain)'
+                #$TrustSearcher.Filter = '(objectClass=trustedDomain)'
 
-                if ($PSBoundParameters['FindOne']) { $Results = $TrustSearcher.FindOne() }
-                else { $Results = $TrustSearcher.FindAll() }
+                #if ($PSBoundParameters['FindOne']) { $Results = $TrustSearcher.FindOne() }
+                #else { $Results = $TrustSearcher.FindAll() }
+                $Results = Invoke-LDAPQuery @LdapSearcherArguments -LDAPFilter "(objectClass=trustedDomain)"
                 $Results | Where-Object {$_} | ForEach-Object {
-                    $Props = $_.Properties
+                    if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                        $Props = @{}
+                        foreach ($a in $_.Attributes.Keys | Sort-Object) {
+                            if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or ($a -eq 'securityidentifier')) {
+                                $Props[$a] = $_.Attributes[$a]
+                            }
+                            else {
+                                $Values = @()
+                                foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
+                                    $Values += [System.Text.Encoding]::UTF8.GetString($v)
+                                }
+                                $Props[$a] = $Values
+                            }
+                        }
+                    }
+                    else {
+                        $Props = $_.Properties
+                    }
+
                     $DomainTrust = New-Object PSObject
 
                     $TrustAttrib = @()
