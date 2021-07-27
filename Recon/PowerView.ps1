@@ -23492,9 +23492,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             $LDAPFilter = Get-ObfuscatedFilterString -LDAPFilter $LDAPFilter
         }
         if ($PSBoundParameters['SSL']) {
+            $MaxResultsToRequest = 100
+            $Results = @()
             $Searcher = Get-DomainSearcher @SearcherArguments -SSL
 
             $Request = New-Object -TypeName System.DirectoryServices.Protocols.SearchRequest
+            $PageRequestControl = New-Object -TypeName System.DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $MaxResultsToRequest
+
             if ($PSBoundParameters['SearchBase']) {
                 $Request.DistinguishedName = $SearchBase
             }
@@ -23509,11 +23513,21 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['FindOne']) {
                 $Request.SizeLimit = 1
             }
+            $Request.Controls.Add($PageRequestControl)
             $Request.Filter = "$LdapFilter"
-            $Response = $Searcher.SendRequest($Request)
 
-            if ($Response.ResultCode -eq 'Success') {
-                $Results = $response.Entries
+            while($true) {
+                $Response = $Searcher.SendRequest($Request)
+                if ($Response.ResultCode -eq 'Success') {
+                    foreach ($entry in $response.Entries) {
+                        $Results += $entry
+                    }
+                }
+                $PageResponseControl = [System.DirectoryServices.Protocols.PageResultResponseControl]$Response.Controls[0]
+                if ($PageResponseControl.Cookie.Length -eq 0) {
+                    break
+                }
+                $PageRequestControl.Cookie = $PageResponseControl.Cookie
             }
         }
         else {
