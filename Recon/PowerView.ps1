@@ -5287,6 +5287,8 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Owner']) { $SearcherArguments['SecurityMasks'] = 'Owner' }
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
         $UserSearcher = Get-DomainSearcher @SearcherArguments
 
         $PolicyArguments = @{}
@@ -5462,18 +5464,16 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 }
             }
 
-            $UserSearcher.filter = "(&(samAccountType=805306368)$Filter)"
-            Write-Verbose "[Get-DomainUser] filter string: $($UserSearcher.filter)"
+            #$UserSearcher.filter = "(&(samAccountType=805306368)$Filter)"
+            #Write-Verbose "[Get-DomainUser] filter string: $($UserSearcher.filter)"
 
-            if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
-            if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
             $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "(&(samAccountType=805306368)$Filter)"
 
             $Results | Where-Object {$_} | ForEach-Object {
                 if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
                     $Prop = @{}
                     foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid')) {
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
                             $Prop[$a] = $_.Attributes[$a]
                         }
                         else {
@@ -5488,6 +5488,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 else {
                     $Prop = $_.Properties
                 }
+
                 $Continue = $True
                 if ($PSBoundParameters['PassExpired']) {
                     if ($MaximumAge -gt 0) {
@@ -6119,6 +6120,14 @@ Specifies the maximum amount of time the server spends searching. Default of 120
 A [Management.Automation.PSCredential] object of alternate credentials
 for connection to the target domain.
 
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
 .OUTPUTS
 
 Hashtable
@@ -6153,7 +6162,13 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate
     )
 
     $GUIDs = @{'00000000-0000-0000-0000-000000000000' = 'All'}
@@ -6173,20 +6188,40 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
 
     $SearcherArguments = @{
         'SearchBase' = $SchemaPath
-        'LDAPFilter' = '(schemaIDGUID=*)'
     }
     if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
     if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
     if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
     if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
     if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+    if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
     $SchemaSearcher = Get-DomainSearcher @SearcherArguments
 
     if ($SchemaSearcher) {
+        $LDAPFilter = '(schemaIDGUID=*)'
         try {
-            $Results = $SchemaSearcher.FindAll()
+            Invoke-LDAPQuery @SearcherArguments -LDAPFilter "$LDAPFilter"
             $Results | Where-Object {$_} | ForEach-Object {
-                $GUIDs[(New-Object Guid (,$_.properties.schemaidguid[0])).Guid] = $_.properties.name[0]
+                if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                    $Prop = @{}
+                    foreach ($a in $_.Attributes.Keys | Sort-Object) {
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
+                            $Prop[$a] = $_.Attributes[$a]
+                        }
+                        else {
+                            $Values = @()
+                            foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
+                                $Values += [System.Text.Encoding]::UTF8.GetString($v)
+                            }
+                            $Prop[$a] = $Values
+                        }
+                    }
+                }
+                else {
+                    $Prop = $_.Properties
+                }
+
+                $GUIDs[(New-Object Guid (,$Prop.schemaidguid[0])).Guid] = $Prop.name[0]
             }
             if ($Results) {
                 try { $Results.dispose() }
@@ -6202,14 +6237,33 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
     }
 
     $SearcherArguments['SearchBase'] = $SchemaPath.replace('Schema','Extended-Rights')
-    $SearcherArguments['LDAPFilter'] = '(objectClass=controlAccessRight)'
+    $LDAPFilter = '(objectClass=controlAccessRight)'
     $RightsSearcher = Get-DomainSearcher @SearcherArguments
 
     if ($RightsSearcher) {
         try {
-            $Results = $RightsSearcher.FindAll()
+            $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "$LDAPFilter"
             $Results | Where-Object {$_} | ForEach-Object {
-                $GUIDs[$_.properties.rightsguid[0].toString()] = $_.properties.name[0]
+                if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                    $Prop = @{}
+                    foreach ($a in $_.Attributes.Keys | Sort-Object) {
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
+                            $Prop[$a] = $_.Attributes[$a]
+                        }
+                        else {
+                            $Values = @()
+                            foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
+                                $Values += [System.Text.Encoding]::UTF8.GetString($v)
+                            }
+                            $Prop[$a] = $Values
+                        }
+                    }
+                }
+                else {
+                    $Prop = $_.Properties
+                }
+
+                $GUIDs[$_.properties.rightsguid[0].toString()] = $Prop.name[0]
             }
             if ($Results) {
                 try { $Results.dispose() }
@@ -6368,6 +6422,14 @@ for connection to the target domain.
 
 Switch. Return raw results instead of translating the fields into a custom PSObject.
 
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
 .EXAMPLE
 
 Get-DomainComputer
@@ -6517,7 +6579,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $Credential = [Management.Automation.PSCredential]::Empty,
 
         [Switch]
-        $Raw
+        $Raw,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate
     )
 
     DynamicParam {
@@ -6540,6 +6608,8 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['SecurityMasks']) { $SearcherArguments['SecurityMasks'] = $SecurityMasks }
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
         $CompSearcher = Get-DomainSearcher @SearcherArguments
 
         $DNSearcherArguments = @{}
@@ -6680,15 +6750,36 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 }
             }
 
-            $CompSearcher.filter = "(&(samAccountType=805306369)$Filter)"
-            Write-Verbose "[Get-DomainComputer] Get-DomainComputer filter string: $($CompSearcher.filter)"
+            #$CompSearcher.filter = "(&(samAccountType=805306369)$Filter)"
+            #Write-Verbose "[Get-DomainComputer] Get-DomainComputer filter string: $($CompSearcher.filter)"
 
-            if ($PSBoundParameters['FindOne']) { $Results = $CompSearcher.FindOne() }
-            else { $Results = $CompSearcher.FindAll() }
+            #if ($PSBoundParameters['FindOne']) { $Results = $CompSearcher.FindOne() }
+            #else { $Results = $CompSearcher.FindAll() }
+
+            $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "(&(samAccountType=805306369)$Filter)"
             $Results | Where-Object {$_} | ForEach-Object {
+                if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                    $Prop = @{}
+                    foreach ($a in $_.Attributes.Keys | Sort-Object) {
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
+                            $Prop[$a] = $_.Attributes[$a]
+                        }
+                        else {
+                            $Values = @()
+                            foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
+                                $Values += [System.Text.Encoding]::UTF8.GetString($v)
+                            }
+                            $Prop[$a] = $Values
+                        }
+                    }
+                }
+                else {
+                    $Prop = $_.Properties
+                }
+
                 $Up = $True
                 if ($PSBoundParameters['Ping']) {
-                    $Up = Test-Connection -Count 1 -Quiet -ComputerName $_.properties.dnshostname
+                    $Up = Test-Connection -Count 1 -Quiet -ComputerName $Prop.dnshostname
                 }
                 if ($Up) {
                     if ($PSBoundParameters['Raw']) {
@@ -6697,7 +6788,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                         $Computer.PSObject.TypeNames.Insert(0, 'PowerView.Computer.Raw')
                     }
                     else {
-                        $Computer = Convert-LDAPProperty -Properties $_.Properties
+                        $Computer = Convert-LDAPProperty -Properties $Prop
                         $Computer.PSObject.TypeNames.Insert(0, 'PowerView.Computer')
                     }
                     $Computer
@@ -6798,6 +6889,14 @@ for connection to the target domain.
 .PARAMETER Raw
 
 Switch. Return raw results instead of translating the fields into a custom PSObject.
+
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
 
 .EXAMPLE
 
@@ -6913,7 +7012,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $Credential = [Management.Automation.PSCredential]::Empty,
 
         [Switch]
-        $Raw
+        $Raw,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate
     )
 
     DynamicParam {
@@ -6936,6 +7041,8 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['SecurityMasks']) { $SearcherArguments['SecurityMasks'] = $SecurityMasks }
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
         $ObjectSearcher = Get-DomainSearcher @SearcherArguments
     }
 
@@ -7012,12 +7119,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             }
 
             if ($Filter -and $Filter -ne '') {
-                $ObjectSearcher.filter = "(&$Filter)"
+                $Filter = "(&$Filter)"
             }
-            Write-Verbose "[Get-DomainObject] Get-DomainObject filter string: $($ObjectSearcher.filter)"
+            Write-Verbose "[Get-DomainObject] Get-DomainObject filter string: $($Filter)"
 
-            if ($PSBoundParameters['FindOne']) { $Results = $ObjectSearcher.FindOne() }
-            else { $Results = $ObjectSearcher.FindAll() }
+            #if ($PSBoundParameters['FindOne']) { $Results = $ObjectSearcher.FindOne() }
+            #else { $Results = $ObjectSearcher.FindAll() }
+            $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "$Filter"
             $Results | Where-Object {$_} | ForEach-Object {
                 if ($PSBoundParameters['Raw']) {
                     # return raw result objects
@@ -7025,7 +7133,26 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                     $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject.Raw')
                 }
                 else {
-                    $Object = Convert-LDAPProperty -Properties $_.Properties
+                    if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                        $Prop = @{}
+                        foreach ($a in $_.Attributes.Keys | Sort-Object) {
+                            if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
+                                $Prop[$a] = $_.Attributes[$a]
+                            }
+                            else {
+                                $Values = @()
+                                foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
+                                    $Values += [System.Text.Encoding]::UTF8.GetString($v)
+                                }
+                                $Prop[$a] = $Values
+                            }
+                        }
+                    }
+                    else {
+                        $Prop = $_.Properties
+                    }
+
+                    $Object = Convert-LDAPProperty -Properties $Prop
                     $Object.PSObject.TypeNames.Insert(0, 'PowerView.ADObject')
                 }
                 $Object
@@ -8382,6 +8509,14 @@ Switch. Specifies that the searcher should also return deleted/tombstoned object
 A [Management.Automation.PSCredential] object of alternate credentials
 for connection to the target domain.
 
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
 .EXAMPLE
 
 Get-DomainObjectAcl -Identity matt.admin -domain testlab.local -ResolveGUIDs
@@ -8470,7 +8605,13 @@ Custom PSObject with ACL entries.
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate
     )
 
     BEGIN {
@@ -8492,6 +8633,8 @@ Custom PSObject with ACL entries.
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
         $Searcher = Get-DomainSearcher @SearcherArguments
 
         $DomainGUIDMapArguments = @{}
@@ -8500,6 +8643,7 @@ Custom PSObject with ACL entries.
         if ($PSBoundParameters['ResultPageSize']) { $DomainGUIDMapArguments['ResultPageSize'] = $ResultPageSize }
         if ($PSBoundParameters['ServerTimeLimit']) { $DomainGUIDMapArguments['ServerTimeLimit'] = $ServerTimeLimit }
         if ($PSBoundParameters['Credential']) { $DomainGUIDMapArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $DomainGUIDMapArguments['SSL'] = $SSL }
 
         # get a GUID -> name mapping
         if ($PSBoundParameters['ResolveGUIDs']) {
@@ -8551,13 +8695,33 @@ Custom PSObject with ACL entries.
             }
 
             if ($Filter) {
-                $Searcher.filter = "(&$Filter)"
+                $Filter = "(&$Filter)"
             }
-            Write-Verbose "[Get-DomainObjectAcl] Get-DomainObjectAcl filter string: $($Searcher.filter)"
+            Write-Verbose "[Get-DomainObjectAcl] Get-DomainObjectAcl filter string: $($Filter)"
 
-            $Results = $Searcher.FindAll()
+            #$Results = $Searcher.FindAll()
+            $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "$Filter"
             $Results | Where-Object {$_} | ForEach-Object {
-                $Object = $_.Properties
+                if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                    $Object = @{}
+                    foreach ($a in $_.Attributes.Keys | Sort-Object) {
+                        Write-Output "TEST: $a"
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or ($a -eq 'ntsecuritydescriptor')) {
+                            $Object[$a] = $_.Attributes[$a]
+                        }
+                        else {
+                            $Values = @()
+                            foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
+                                $Values += [System.Text.Encoding]::UTF8.GetString($v)
+                            }
+                            $Object[$a] = $Values
+                        }
+                    }
+                }
+                else {
+                    $Object = $_.Properties
+                }
+
 
                 if ($Object.objectsid -and $Object.objectsid[0]) {
                     $ObjectSid = (New-Object System.Security.Principal.SecurityIdentifier($Object.objectsid[0],0)).Value
@@ -23492,7 +23656,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             $LDAPFilter = Get-ObfuscatedFilterString -LDAPFilter $LDAPFilter
         }
         if ($PSBoundParameters['SSL']) {
-            $MaxResultsToRequest = 100
+            $MaxResultsToRequest = 1000
             $Results = @()
             $Searcher = Get-DomainSearcher @SearcherArguments -SSL
 
@@ -23641,7 +23805,6 @@ String
     Write-Verbose "[Get-ObfuscatedFilterString] Filter string obfuscated: $($OutFilter)"
     $OutFilter
 }
-
 
 
 ########################################################
