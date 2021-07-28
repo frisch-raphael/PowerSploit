@@ -4207,6 +4207,10 @@ Switch. Use LDAP queries to determine the domain controllers instead of built in
 A [Management.Automation.PSCredential] object of alternate credentials
 for connection to the target domain.
 
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
 .EXAMPLE
 
 Get-DomainController -Domain 'test.local'
@@ -4261,13 +4265,17 @@ If -LDAP isn't specified.
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $SSL
     )
 
     PROCESS {
         $Arguments = @{}
         if ($PSBoundParameters['Domain']) { $Arguments['Domain'] = $Domain }
         if ($PSBoundParameters['Credential']) { $Arguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $Arguments['SSL'] = $SSL }
 
         if ($PSBoundParameters['LDAP'] -or $PSBoundParameters['Server']) {
             if ($PSBoundParameters['Server']) { $Arguments['Server'] = $Server }
@@ -10704,6 +10712,14 @@ for connection to the target domain.
 
 Switch. Return raw results instead of translating the fields into a custom PSObject.
 
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
 .EXAMPLE
 
 Get-DomainGroup | select samaccountname
@@ -10871,7 +10887,13 @@ Custom PSObject with translated group property fields.
         $Credential = [Management.Automation.PSCredential]::Empty,
 
         [Switch]
-        $Raw
+        $Raw,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate
     )
 
     BEGIN {
@@ -10886,146 +10908,162 @@ Custom PSObject with translated group property fields.
         if ($PSBoundParameters['SecurityMasks']) { $SearcherArguments['SecurityMasks'] = $SecurityMasks }
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
-        $GroupSearcher = Get-DomainSearcher @SearcherArguments
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
     }
 
     PROCESS {
-        if ($GroupSearcher) {
-            if ($PSBoundParameters['MemberIdentity']) {
+        if ($PSBoundParameters['MemberIdentity']) {
 
-                if ($SearcherArguments['Properties']) {
-                    $OldProperties = $SearcherArguments['Properties']
-                }
+            if ($SearcherArguments['Properties']) {
+                $OldProperties = $SearcherArguments['Properties']
+            }
 
-                $SearcherArguments['Identity'] = $MemberIdentity
-                $SearcherArguments['Raw'] = $True
+            $SearcherArguments['Identity'] = $MemberIdentity
+            $SearcherArguments['Raw'] = $True
 
-                Get-DomainObject @SearcherArguments | ForEach-Object {
-                    # convert the user/group to a directory entry
-                    $ObjectDirectoryEntry = $_.GetDirectoryEntry()
+            Get-DomainObject @SearcherArguments | ForEach-Object {
+                # convert the user/group to a directory entry
+                $ObjectDirectoryEntry = $_.GetDirectoryEntry()
 
-                    # cause the cache to calculate the token groups for the user/group
-                    $ObjectDirectoryEntry.RefreshCache('tokenGroups')
+                # cause the cache to calculate the token groups for the user/group
+                $ObjectDirectoryEntry.RefreshCache('tokenGroups')
 
-                    $ObjectDirectoryEntry.TokenGroups | ForEach-Object {
-                        # convert the token group sid
-                        $GroupSid = (New-Object System.Security.Principal.SecurityIdentifier($_,0)).Value
+                $ObjectDirectoryEntry.TokenGroups | ForEach-Object {
+                    # convert the token group sid
+                    $GroupSid = (New-Object System.Security.Principal.SecurityIdentifier($_,0)).Value
 
-                        # ignore the built in groups
-                        if ($GroupSid -notmatch '^S-1-5-32-.*') {
-                            $SearcherArguments['Identity'] = $GroupSid
-                            $SearcherArguments['Raw'] = $False
-                            if ($OldProperties) { $SearcherArguments['Properties'] = $OldProperties }
-                            $Group = Get-DomainObject @SearcherArguments
-                            if ($Group) {
-                                $Group.PSObject.TypeNames.Insert(0, 'PowerView.Group')
-                                $Group
-                            }
+                    # ignore the built in groups
+                    if ($GroupSid -notmatch '^S-1-5-32-.*') {
+                        $SearcherArguments['Identity'] = $GroupSid
+                        $SearcherArguments['Raw'] = $False
+                        if ($OldProperties) { $SearcherArguments['Properties'] = $OldProperties }
+                        $Group = Get-DomainObject @SearcherArguments
+                        if ($Group) {
+                            $Group.PSObject.TypeNames.Insert(0, 'PowerView.Group')
+                            $Group
                         }
                     }
                 }
             }
-            else {
-                $IdentityFilter = ''
-                $Filter = ''
-                $Identity | Where-Object {$_} | ForEach-Object {
-                    $IdentityInstance = $_.Replace('(', '\28').Replace(')', '\29')
-                    if ($IdentityInstance -match '^S-1-') {
-                        $IdentityFilter += "(objectsid=$IdentityInstance)"
+        }
+        else {
+            $IdentityFilter = ''
+            $Filter = ''
+            $Identity | Where-Object {$_} | ForEach-Object {
+                $IdentityInstance = $_.Replace('(', '\28').Replace(')', '\29')
+                if ($IdentityInstance -match '^S-1-') {
+                    $IdentityFilter += "(objectsid=$IdentityInstance)"
+                }
+                elseif ($IdentityInstance -match '^CN=') {
+                    $IdentityFilter += "(distinguishedname=$IdentityInstance)"
+                    if ((-not $PSBoundParameters['Domain']) -and (-not $PSBoundParameters['SearchBase'])) {
+                        # if a -Domain isn't explicitly set, extract the object domain out of the distinguishedname
+                        #   and rebuild the domain searcher
+                        $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
+                        Write-Verbose "[Get-DomainGroup] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
+                        $SearcherArguments['Domain'] = $IdentityDomain
+                        $GroupSearcher = Get-DomainSearcher @SearcherArguments
+                        if (-not $GroupSearcher) {
+                            Write-Warning "[Get-DomainGroup] Unable to retrieve domain searcher for '$IdentityDomain'"
+                        }
                     }
-                    elseif ($IdentityInstance -match '^CN=') {
-                        $IdentityFilter += "(distinguishedname=$IdentityInstance)"
-                        if ((-not $PSBoundParameters['Domain']) -and (-not $PSBoundParameters['SearchBase'])) {
-                            # if a -Domain isn't explicitly set, extract the object domain out of the distinguishedname
-                            #   and rebuild the domain searcher
-                            $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
-                            Write-Verbose "[Get-DomainGroup] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
-                            $SearcherArguments['Domain'] = $IdentityDomain
-                            $GroupSearcher = Get-DomainSearcher @SearcherArguments
-                            if (-not $GroupSearcher) {
-                                Write-Warning "[Get-DomainGroup] Unable to retrieve domain searcher for '$IdentityDomain'"
+                }
+                elseif ($IdentityInstance -imatch '^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}$') {
+                    $GuidByteString = (([Guid]$IdentityInstance).ToByteArray() | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
+                    $IdentityFilter += "(objectguid=$GuidByteString)"
+                }
+                elseif ($IdentityInstance.Contains('\')) {
+                    $ConvertedIdentityInstance = $IdentityInstance.Replace('\28', '(').Replace('\29', ')') | Convert-ADName -OutputType Canonical
+                    if ($ConvertedIdentityInstance) {
+                        $GroupDomain = $ConvertedIdentityInstance.SubString(0, $ConvertedIdentityInstance.IndexOf('/'))
+                        $GroupName = $IdentityInstance.Split('\')[1]
+                        $IdentityFilter += "(samAccountName=$GroupName)"
+                        $SearcherArguments['Domain'] = $GroupDomain
+                        Write-Verbose "[Get-DomainGroup] Extracted domain '$GroupDomain' from '$IdentityInstance'"
+                        $GroupSearcher = Get-DomainSearcher @SearcherArguments
+                    }
+                }
+                else {
+                    $IdentityFilter += "(|(samAccountName=$IdentityInstance)(name=$IdentityInstance))"
+                }
+            }
+
+            if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
+                $Filter += "(|$IdentityFilter)"
+            }
+
+            if ($PSBoundParameters['AdminCount']) {
+                Write-Verbose '[Get-DomainGroup] Searching for adminCount=1'
+                $Filter += '(admincount=1)'
+            }
+            if ($PSBoundParameters['GroupScope']) {
+                $GroupScopeValue = $PSBoundParameters['GroupScope']
+                $Filter = Switch ($GroupScopeValue) {
+                    'DomainLocal'       { '(groupType:1.2.840.113556.1.4.803:=4)' }
+                    'NotDomainLocal'    { '(!(groupType:1.2.840.113556.1.4.803:=4))' }
+                    'Global'            { '(groupType:1.2.840.113556.1.4.803:=2)' }
+                    'NotGlobal'         { '(!(groupType:1.2.840.113556.1.4.803:=2))' }
+                    'Universal'         { '(groupType:1.2.840.113556.1.4.803:=8)' }
+                    'NotUniversal'      { '(!(groupType:1.2.840.113556.1.4.803:=8))' }
+                }
+                Write-Verbose "[Get-DomainGroup] Searching for group scope '$GroupScopeValue'"
+            }
+            if ($PSBoundParameters['GroupProperty']) {
+                $GroupPropertyValue = $PSBoundParameters['GroupProperty']
+                $Filter = Switch ($GroupPropertyValue) {
+                    'Security'              { '(groupType:1.2.840.113556.1.4.803:=2147483648)' }
+                    'Distribution'          { '(!(groupType:1.2.840.113556.1.4.803:=2147483648))' }
+                    'CreatedBySystem'       { '(groupType:1.2.840.113556.1.4.803:=1)' }
+                    'NotCreatedBySystem'    { '(!(groupType:1.2.840.113556.1.4.803:=1))' }
+                }
+                Write-Verbose "[Get-DomainGroup] Searching for group property '$GroupPropertyValue'"
+            }
+            if ($PSBoundParameters['LDAPFilter']) {
+                Write-Verbose "[Get-DomainGroup] Using additional LDAP filter: $LDAPFilter"
+                $Filter += "$LDAPFilter"
+            }
+
+            $Filter = "(&(objectCategory=group)$Filter)"
+            Write-Verbose "[Get-DomainGroup] filter string: $($Filter)"
+            $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "$Filter"
+            $Results | Where-Object {$_} | ForEach-Object {
+                if ($PSBoundParameters['Raw']) {
+                    # return raw result objects
+                    $Group = $_
+                }
+                else {
+                    if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                        $Prop = @{}
+                        foreach ($a in $_.Attributes.Keys | Sort-Object) {
+                            if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
+                                $Prop[$a] = $_.Attributes[$a]
+                            }
+                            else {
+                                $Values = @()
+                                foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
+                                    $Values += [System.Text.Encoding]::UTF8.GetString($v)
+                                }
+                                $Prop[$a] = $Values
                             }
                         }
                     }
-                    elseif ($IdentityInstance -imatch '^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}$') {
-                        $GuidByteString = (([Guid]$IdentityInstance).ToByteArray() | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
-                        $IdentityFilter += "(objectguid=$GuidByteString)"
-                    }
-                    elseif ($IdentityInstance.Contains('\')) {
-                        $ConvertedIdentityInstance = $IdentityInstance.Replace('\28', '(').Replace('\29', ')') | Convert-ADName -OutputType Canonical
-                        if ($ConvertedIdentityInstance) {
-                            $GroupDomain = $ConvertedIdentityInstance.SubString(0, $ConvertedIdentityInstance.IndexOf('/'))
-                            $GroupName = $IdentityInstance.Split('\')[1]
-                            $IdentityFilter += "(samAccountName=$GroupName)"
-                            $SearcherArguments['Domain'] = $GroupDomain
-                            Write-Verbose "[Get-DomainGroup] Extracted domain '$GroupDomain' from '$IdentityInstance'"
-                            $GroupSearcher = Get-DomainSearcher @SearcherArguments
-                        }
-                    }
                     else {
-                        $IdentityFilter += "(|(samAccountName=$IdentityInstance)(name=$IdentityInstance))"
+                        $Prop = $_.Properties
                     }
-                }
 
-                if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
-                    $Filter += "(|$IdentityFilter)"
+                    $Group = Convert-LDAPProperty -Properties $Prop
                 }
-
-                if ($PSBoundParameters['AdminCount']) {
-                    Write-Verbose '[Get-DomainGroup] Searching for adminCount=1'
-                    $Filter += '(admincount=1)'
-                }
-                if ($PSBoundParameters['GroupScope']) {
-                    $GroupScopeValue = $PSBoundParameters['GroupScope']
-                    $Filter = Switch ($GroupScopeValue) {
-                        'DomainLocal'       { '(groupType:1.2.840.113556.1.4.803:=4)' }
-                        'NotDomainLocal'    { '(!(groupType:1.2.840.113556.1.4.803:=4))' }
-                        'Global'            { '(groupType:1.2.840.113556.1.4.803:=2)' }
-                        'NotGlobal'         { '(!(groupType:1.2.840.113556.1.4.803:=2))' }
-                        'Universal'         { '(groupType:1.2.840.113556.1.4.803:=8)' }
-                        'NotUniversal'      { '(!(groupType:1.2.840.113556.1.4.803:=8))' }
-                    }
-                    Write-Verbose "[Get-DomainGroup] Searching for group scope '$GroupScopeValue'"
-                }
-                if ($PSBoundParameters['GroupProperty']) {
-                    $GroupPropertyValue = $PSBoundParameters['GroupProperty']
-                    $Filter = Switch ($GroupPropertyValue) {
-                        'Security'              { '(groupType:1.2.840.113556.1.4.803:=2147483648)' }
-                        'Distribution'          { '(!(groupType:1.2.840.113556.1.4.803:=2147483648))' }
-                        'CreatedBySystem'       { '(groupType:1.2.840.113556.1.4.803:=1)' }
-                        'NotCreatedBySystem'    { '(!(groupType:1.2.840.113556.1.4.803:=1))' }
-                    }
-                    Write-Verbose "[Get-DomainGroup] Searching for group property '$GroupPropertyValue'"
-                }
-                if ($PSBoundParameters['LDAPFilter']) {
-                    Write-Verbose "[Get-DomainGroup] Using additional LDAP filter: $LDAPFilter"
-                    $Filter += "$LDAPFilter"
-                }
-
-                $GroupSearcher.filter = "(&(objectCategory=group)$Filter)"
-                Write-Verbose "[Get-DomainGroup] filter string: $($GroupSearcher.filter)"
-
-                if ($PSBoundParameters['FindOne']) { $Results = $GroupSearcher.FindOne() }
-                else { $Results = $GroupSearcher.FindAll() }
-                $Results | Where-Object {$_} | ForEach-Object {
-                    if ($PSBoundParameters['Raw']) {
-                        # return raw result objects
-                        $Group = $_
-                    }
-                    else {
-                        $Group = Convert-LDAPProperty -Properties $_.Properties
-                    }
-                    $Group.PSObject.TypeNames.Insert(0, 'PowerView.Group')
-                    $Group
-                }
-                if ($Results) {
-                    try { $Results.dispose() }
-                    catch {
-                        Write-Verbose "[Get-DomainGroup] Error disposing of the Results object"
-                    }
-                }
-                $GroupSearcher.dispose()
+                $Group.PSObject.TypeNames.Insert(0, 'PowerView.Group')
+                $Group
             }
+            if ($Results) {
+                try { $Results.dispose() }
+                catch {
+                    Write-Verbose "[Get-DomainGroup] Error disposing of the Results object"
+                }
+            }
+            $GroupSearcher.dispose()
         }
     }
 }
@@ -22784,6 +22822,14 @@ Specifies an Active Directory server (domain controller) to bind to.
 A [Management.Automation.PSCredential] object of alternate credentials
 for connection to the target domain.
 
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
 .EXAMPLE
 
 Get-DomainDN
@@ -22820,7 +22866,13 @@ A string representing the specified domain distinguished name.
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate
     )
 
     $SearcherArguments = @{
@@ -22829,6 +22881,8 @@ A string representing the specified domain distinguished name.
     if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
     if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
     if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+    if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+    if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
 
     $DCDN = Get-DomainComputer @SearcherArguments -FindOne | Select-Object -First 1 -ExpandProperty distinguishedname
 
