@@ -6244,9 +6244,9 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
                 Write-Verbose "[Get-DomainGUIDMap] Error disposing of the Results object: $_"
             }
         }
-        catch {
-            Write-Verbose "[Get-DomainGUIDMap] Error in building GUID map: $_"
-        }
+    }
+    catch {
+        Write-Verbose "[Get-DomainGUIDMap] Error in building GUID map: $_"
     }
 
     $SearcherArguments['SearchBase'] = $SchemaPath.replace('Schema','Extended-Rights')
@@ -6282,9 +6282,9 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
                 Write-Verbose "[Get-DomainGUIDMap] Error disposing of the Results object: $_"
             }
         }
-        catch {
-            Write-Verbose "[Get-DomainGUIDMap] Error in building GUID map: $_"
-        }
+    }
+    catch {
+        Write-Verbose "[Get-DomainGUIDMap] Error in building GUID map: $_"
     }
 
     $GUIDs
