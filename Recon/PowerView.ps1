@@ -5481,7 +5481,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
                     $Prop = @{}
                     foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or ($a -eq 'ntsecuritydescriptor')) {
                             $Prop[$a] = $_.Attributes[$a]
                         }
                         else {
@@ -6208,12 +6208,12 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
     if ($SchemaSearcher) {
         $LDAPFilter = '(schemaIDGUID=*)'
         try {
-            Invoke-LDAPQuery @SearcherArguments -LDAPFilter "$LDAPFilter"
+            $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "$LDAPFilter"
             $Results | Where-Object {$_} | ForEach-Object {
                 if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
                     $Prop = @{}
                     foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or $a -eq 'schemaidguid') {
                             $Prop[$a] = $_.Attributes[$a]
                         }
                         else {
@@ -6271,7 +6271,7 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
                     $Prop = $_.Properties
                 }
 
-                $GUIDs[$_.properties.rightsguid[0].toString()] = $Prop.name[0]
+                $GUIDs[$Prop.rightsguid[0].toString()] = $Prop.name[0]
             }
             if ($Results) {
                 try { $Results.dispose() }
@@ -23762,6 +23762,12 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
 
             $Request = New-Object -TypeName System.DirectoryServices.Protocols.SearchRequest
             $PageRequestControl = New-Object -TypeName System.DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $MaxResultsToRequest
+
+            # for returning ntsecuritydescriptor
+            if ($PSBoundParameters['SecurityMasks']) {
+                $SDFlagsControl = New-Object -TypeName System.DirectoryServices.Protocols.SecurityDescriptorFlagControl -ArgumentList $SecurityMasks
+                $Request.Controls.Add($SDFlagsControl)
+            }
 
             if ($PSBoundParameters['SearchBase']) {
                 $Request.DistinguishedName = $SearchBase
