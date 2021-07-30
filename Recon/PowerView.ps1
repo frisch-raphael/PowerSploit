@@ -23932,8 +23932,13 @@ String
 
         }
         else {
-            $Value = $Parts[$i].SubString(0,$Parts[$i].IndexOf(')'))
-            if ($Value.Length -gt 0) {
+            if ($Parts[$i].IndexOf(')') -ne -1) {
+                $Value = $Parts[$i].SubString(0,$Parts[$i].IndexOf(')'))
+            }
+            else {
+                $Value = $Parts[$i]
+            }
+            if ($Value.Length -gt 1) {
                 $OutValueHash = @{}
                 for ($c=0; $c -lt (Get-Random -Maximum $($Value.Length) -Minimum 1); $c++) {
                     $Index = Get-Random -Maximum $($Value.Length - 1)
@@ -23955,6 +23960,11 @@ String
                         $OutFilter += "$($Value[$c])"
                     }
                 }
+            }
+            else {
+                $OutFilter += "$($Value)"
+            }
+            if ($Parts[$i].IndexOf(')') -ne -1) {
                 $Next = $Parts[$i].SubString($Parts[$i].IndexOf(')'))
                 if ($i -eq $Parts.Length - 1) {
                     $OutFilter += "$($Next)"
@@ -23964,6 +23974,14 @@ String
                 }
                 if ($Next -match 'userAccountControl') {
                     $Skip = $True
+                }
+            }
+            else {
+                if (Get-Random -Maximum 2) {
+                    $OutFilter += "="
+                }
+                else {
+                    $OutFilter += '\3d'
                 }
             }
         }
@@ -24268,10 +24286,28 @@ String
             $NetbiosName = (Get-DomainObject -SearchBase "$ConfigDN" -LdapFilter "$NetbiosFilter" @SearcherArguments).netbiosname
 
             # we have everything we can start to build the arguments
-            $OutArguments = "/user:$($Account.samaccountname) /id:$AccountID /sid:$DomainSID /netbios:$NetbiosName /dc:$($DomainObject.DomainControllers[0].Name) /domain:$Domain /pgid:$($Account.primarygroupid) /uac:$($Account.useraccountcontrol -replace ' ','') /displayname:""$($Account.displayname)"""
+            $OutArguments = "/user:$($Account.samaccountname) /id:$AccountID /sid:$DomainSID /netbios:$NetbiosName /dc:$($DomainObject.DomainControllers[0].Name) /domain:$Domain /pgid:$($Account.primarygroupid) /uac:$($Account.useraccountcontrol -replace ' ','') /displayname:""$($Account.displayname)"" /logoncount:$($Account.logoncount) /badpwdcount:$($Account.badpwdcount) /pwdlastset:""$($Account.pwdlastset.ToString())"""
             if ($Groups.Length -gt 0) {
                 $OutArguments += " /groups:$($Groups -join ',')"
             }
+            if ($Account.scriptpath) {
+                $OutArguments += " /scriptpath:""$($Account.scriptpath)""" 
+            }
+            if ($Account.profilepath) {
+                $OutArguments += " /profilepath:""$($Account.profilepath)""" 
+            }
+            if ($Account.homedrive) {
+                $OutArguments += " /homedrive:""$($Account.homedrive)""" 
+            }
+            if ($Account.homedirectory) {
+                $OutArguments += " /homedir:""$($Account.homedirectory)""" 
+            }
+            if ($Account.lastlogon -notmatch 1601) {
+                $OutArguments += " /lastlogon:""$($Account.lastlogon.ToString())"""
+            }
+
+
+
 
             $OutArguments
         }
