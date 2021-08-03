@@ -24281,7 +24281,7 @@ String
             $Now = Get-Date
 
             # we have everything we can start to build the arguments
-            $OutArguments = "/user:$($Account.samaccountname) /id:$AccountID /sid:$DomainSID /netbios:$NetbiosName /dc:$($DomainObject.DomainControllers[0].Name) /domain:$Domain /pgid:$($Account.primarygroupid) /displayname:""$($Account.displayname)"" /logoncount:$($Account.logoncount) /badpwdcount:$($Account.badpwdcount) /pwdlastset:""$($Account.pwdlastset.ToString())"" /lastlogon:""$($Now.AddSeconds(-$(Get-Random -Maximum 10)))"""
+            $OutArguments = "/user:$($Account.samaccountname) /id:$AccountID /sid:$DomainSID /netbios:$NetbiosName /dc:$($DomainObject.DomainControllers[0].Name) /domain:$Domain /pgid:$($Account.primarygroupid) /displayname:""$($Account.displayname)"" /logoncount:$($Account.logoncount) /badpwdcount:$($Account.badpwdcount) /pwdlastset:""$($Account.pwdlastset.ToString())"" /lastlogon:""$($Now.AddSeconds(-$(Get-Random -Maximum 10)).ToString())"""
             if ($Account.useraccountcontrol -ne "NORMAL_ACCOUNT") {
                 $OutArguments += " /uac:$($Account.useraccountcontrol -replace ' ','')"
             }
@@ -24303,7 +24303,7 @@ String
             if ($Account.logonhours) {
                 $LogoffTime = Get-LogoffTime -LogonHours $Account.logonhours -LogonTime $Now
                 if ($LogoffTime -and $LogoffTime -ne $Now) {
-                    $OutArguments += " /logofftime:""$($LogoffTime.AddMinutes(-$LogoffTime.Minute).AddSeconds(-$LogoffTime.Second))"""
+                    $OutArguments += " /logofftime:""$($LogoffTime.AddMinutes(-$LogoffTime.Minute).AddSeconds(-$LogoffTime.Second).ToString())"""
                 }
             }
             elseif ($LogoffTime -eq $Now) {
@@ -24321,7 +24321,12 @@ String
                 $OutArguments += " /endtime:240m /renewtill:240m"
             }
             else {
-                $OutArguments += " /endtime:$($DomainPolicy.KerberosPolicy.MaxTicketAge)h /renewtill:$($DomainPolicy.KerberosPolicy.MaxRenewAge)d"
+                if ($DomainPolicy.KerberosPolicy.MaxTicketAge -ne 10) {
+                    $OutArguments += " /endtime:$($DomainPolicy.KerberosPolicy.MaxTicketAge)h"
+                }
+                if ($DomainPolicy.KerberosPolicy.MaxRenewAge -ne 7) {
+                    $OutArguments += " /renewtill:$($DomainPolicy.KerberosPolicy.MaxRenewAge)d"
+                }
             }
 
             $OutArguments
