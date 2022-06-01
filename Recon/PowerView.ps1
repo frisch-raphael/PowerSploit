@@ -6778,7 +6778,31 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
 }
 
 function Get-DomainNetworks {
-    $Comps = Get-DomainComputer -Ping
+    Param(
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain, 
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty )
+
+    $DomainNetworksArgs = @{
+        'Ping' = $true
+    }
+
+    if ($PSBoundParameters['Server']) {
+        $DomainNetworksArgs['Server'] = $PSBoundParameters['Server']
+        $DomainNetworksArgs['Credential'] = $PSBoundParameters['Credential']
+        $DomainNetworksArgs['Domain'] = $PSBoundParameters['Domain']
+    }
+
+    $Comps = Get-DomainComputer @DomainNetworksArgs
     $Networks = @()
     foreach ($Comp in $Comps) {
         $FirstBytes = ($Comp.Ip -split "\.")[0..2] -Join '.'
@@ -18088,6 +18112,9 @@ PowerView.UserProcess
         [Switch]
         $Tombstone,
 
+        [Switch]
+        $ProcessNotPresent,
+
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty,
@@ -18189,30 +18216,37 @@ PowerView.UserProcess
 
         # the host enumeration block we're using to enumerate all servers
         $HostEnumBlock = {
-            Param($ComputerName, $ProcessName, $TargetUsers, $Credential)
+
+            Param($ComputerName, $ProcessName, $TargetUsers, $Credential, $ProcessNotPresent)
 
             ForEach ($TargetComputer in $ComputerName) {
                 $Up = Test-Connection -Count 1 -Quiet -ComputerName $TargetComputer
+
                 if ($Up) {
                     # try to enumerate all active processes on the remote host
                     # and search for a specific process name
                     if ($Credential) {
-                        $Processes = Get-WMIProcess -Credential $Credential -ComputerName $TargetComputer -ErrorAction SilentlyContinue
+                        $Processes = Get-WMIProcess -Credential $Credential -ComputerName $TargetComputer -Verbose
                     }
                     else {
-                        $Processes = Get-WMIProcess -ComputerName $TargetComputer -ErrorAction SilentlyContinue
+                        $Processes = Get-WMIProcess -ComputerName $TargetComputer -Verbose
                     }
+                    $ProcessFound = $false
                     ForEach ($Process in $Processes) {
                         # if we're hunting for a process name or comma-separated names
                         if ($ProcessName) {
                             if ($ProcessName -Contains $Process.ProcessName) {
-                                $Process
+                                $ProcessFound = $true
+                                if (-not $PSBoundParameters['ProcessNotPresent']) {$Process}
                             }
                         }
                         # if the session user is in the target list, display some output
                         elseif ($TargetUsers -Contains $Process.User) {
-                            $Process
+                            if (-not $PSBoundParameters['ProcessNotPresent']) { $Process }
                         }
+                    }
+                    if ($Processes -and -not $ProcessFound -and $PSBoundParameters['ProcessNotPresent']) {
+                        Write-Host $Processes[0].ComputerName
                     }
                 }
             }
@@ -18235,7 +18269,7 @@ PowerView.UserProcess
                 Start-Sleep -Seconds $RandNo.Next((1 - $Jitter) * $Delay, (1 + $Jitter) * $Delay)
 
                 Write-Verbose "[Find-DomainProcess] Enumerating server $TargetComputer ($Counter of $($TargetComputers.count))"
-                $Result = Invoke-Command -ScriptBlock $HostEnumBlock -ArgumentList $TargetComputer, $TargetProcessName, $TargetUsers, $Credential
+                $Result = Invoke-Command -ScriptBlock $HostEnumBlock -ArgumentList $TargetComputer, $TargetProcessName, $TargetUsers, $Credential, $PSBoundParameters['ProcessNotPresent']
                 $Result
 
                 if ($Result -and $StopOnSuccess) {
@@ -18249,9 +18283,10 @@ PowerView.UserProcess
 
             # if we're using threading, kick off the script block with New-ThreadedFunction
             $ScriptParams = @{
-                'ProcessName' = $TargetProcessName
-                'TargetUsers' = $TargetUsers
-                'Credential'  = $Credential
+                'ProcessName'       = $TargetProcessName
+                'TargetUsers'       = $TargetUsers
+                'Credential'        = $Credential
+                'ProcessNotPresent' = $PSBoundParameters['ProcessNotPresent']
             }
 
             # if we're using threading, kick off the script block with New-ThreadedFunction using the $HostEnumBlock + params
@@ -24717,3 +24752,126 @@ Set-Alias Find-ForeignUser Get-DomainForeignUser
 Set-Alias Find-ForeignGroup Get-DomainForeignGroupMember
 Set-Alias Invoke-MapDomainTrust Get-DomainTrustMapping
 Set-Alias Get-DomainPolicy Get-DomainPolicyData
+
+function Invoke-FeedColumbo() {
+    Param(
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain, 
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty )
+
+    $Arguments = @{}
+    if ($PSBoundParameters['Server']) {
+        $Arguments['Server'] = $PSBoundParameters['Server']
+        $Arguments['Credential'] = $PSBoundParameters['Credential']
+        $Arguments['Domain'] = $PSBoundParameters['Domain']
+    }
+
+
+    [xml]$xmlDoc = New-Object system.Xml.XmlDocument
+    $xmlDoc.LoadXml("<?xml version=`"1.0`" encoding=`"utf-8`"?><root></root>")
+
+    $xmlElt = $xmlDoc.CreateElement("AccountPolicy")
+    $DomainPolicy = Get-DomainPolicyData @Arguments
+    $AccountPolicy = $DomainPolicy.SystemAccess
+    foreach ($prop in $AccountPolicy.PsObject.Properties) {
+        $xmlPropElt = $xmlDoc.CreateElement($prop.Name) 
+        $xmlPropText = $xmlDoc.CreateTextNode($prop.Value) 
+        $xmlPropElt.AppendChild($xmlPropText) | Out-Null
+        $xmlElt.AppendChild($xmlPropElt) | Out-Null
+    }
+    $xmlDoc.LastChild.AppendChild($xmlElt) | Out-Null;
+    $Users = Get-DomainUser @Arguments
+
+    $XmlUserRootElt = $xmlDoc.CreateElement("Admins")
+    $Admins = $Users | Where-Object { $_.memberof -match 'admins du domaine|domain admins' } 
+    foreach ($User in $Admins) {
+        $xmlUserElt = $xmlDoc.CreateElement("Name")
+        $xmlUserText = $xmlDoc.CreateTextNode($User.samaccountname)
+        $xmlUserElt.AppendChild($xmlUserText) | Out-Null
+        $XmlUserRootElt.AppendChild($xmlUserElt) | Out-Null
+    }
+    $xmlDoc.LastChild.AppendChild($XmlUserRootElt) | Out-Null;
+
+    $XmlUserRootElt = $xmlDoc.CreateElement("Users")
+    foreach ($User in $Users) {
+        $Today = get-date
+        $IsPasswordOld = $User.pwdlastset -lt $Today.AddDays(-365)
+        $IsLastLogonOld = $User.lastlogon -lt ($Today.AddDays(-365 * 3))
+        $xmlUserElt = $xmlDoc.CreateElement("User")
+
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("Name")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($User.samaccountname)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("IsPasswordOld")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($IsPasswordOld)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("IsLastLogonOld")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($IsLastLogonOld)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("PwdLastSet")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($user.pwdlastset)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("LastLogon")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($user.lastlogon)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+        $XmlUserRootElt.AppendChild($xmlUserElt) | Out-Null
+    }
+
+    $xmlDoc.LastChild.AppendChild($XmlUserRootElt) | Out-Null;
+
+    $xmlDoc.Save("c:\users\public\columbofeed.xml")
+
+}
+
+function Find-ProcessLessComputer() {
+    Param(
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [String]
+        $Domain, 
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $ProcessName, 
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty )
+
+    $Arguments = @{}
+    $Arguments['ProcessName'] = $PSBoundParameters['ProcessName']
+    if ($PSBoundParameters['Server']) {
+        $Arguments['Server'] = $PSBoundParameters['Server']
+        $Arguments['Credential'] = $PSBoundParameters['Credential']
+        $Arguments['Domain'] = $PSBoundParameters['Domain']
+    }
+
+    # $ComputersUp = Get-DomainComputer @Arguments -Verbose
+    $Processes = Find-DomainProcess @Arguments -Verbose -Threads 100
+    
+
+}
