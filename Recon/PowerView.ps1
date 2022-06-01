@@ -18237,7 +18237,7 @@ PowerView.UserProcess
                         if ($ProcessName) {
                             if ($ProcessName -Contains $Process.ProcessName) {
                                 $ProcessFound = $true
-                                if (-not $PSBoundParameters['ProcessNotPresent']) {$Process}
+                                if (-not $PSBoundParameters['ProcessNotPresent']) { $Process }
                             }
                         }
                         # if the session user is in the target list, display some output
@@ -24789,11 +24789,13 @@ function Invoke-FeedColumbo() {
         $xmlElt.AppendChild($xmlPropElt) | Out-Null
     }
     $xmlDoc.LastChild.AppendChild($xmlElt) | Out-Null;
-    $Users = Get-DomainUser @Arguments
 
-    $XmlUserRootElt = $xmlDoc.CreateElement("Admins")
-    $Admins = $Users | Where-Object { $_.memberof -match 'admins du domaine|domain admins' } 
-    foreach ($User in $Admins) {
+    $Admins = Get-DomainUser @Arguments -AdminCount
+    $Users = Get-DomainUser @Arguments | Where-Object { $_.useraccountcontrol -notlike "*ACCOUNTDISABLE*" }
+    $DomainAdmins = $Users | Where-Object { $_.memberof -match 'admins du domaine|domain admins' } 
+    
+    $XmlUserRootElt = $xmlDoc.CreateElement("DomainAdmins")
+    foreach ($User in $DomainAdmins) {
         $xmlUserElt = $xmlDoc.CreateElement("Name")
         $xmlUserText = $xmlDoc.CreateTextNode($User.samaccountname)
         $xmlUserElt.AppendChild($xmlUserText) | Out-Null
@@ -24804,8 +24806,12 @@ function Invoke-FeedColumbo() {
     $XmlUserRootElt = $xmlDoc.CreateElement("Users")
     foreach ($User in $Users) {
         $Today = get-date
-        $IsPasswordOld = $User.pwdlastset -lt $Today.AddDays(-365)
-        $IsLastLogonOld = $User.lastlogon -lt ($Today.AddDays(-365 * 3))
+        $IsPasswordOld = $User.pwdlastset -lt $Today.AddDays(-365 * 3)
+        $IsLastLogonOld = $User.lastlogon -lt ($Today.AddDays(-365))
+        $PwdLastSetDate = If ($User.pwdlastset) { $User.pwdlastset.ToString("dd/MM/yyyy") } Else { '' }
+        $LastLogon = If ($User.lastlogon) { $User.lastlogon.ToString("dd/MM/yyyy") } Else { '' }
+
+        $IsPasswordSetToNeverExpire = $User.useraccountcontrol -like "*DONT_EXPIRE_PASSWORD*"
         $xmlUserElt = $xmlDoc.CreateElement("User")
 
 
@@ -24827,12 +24833,53 @@ function Invoke-FeedColumbo() {
         $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
 
         $xmlUserPropElt = $xmlDoc.CreateElement("PwdLastSet")
-        $xmlUserPropText = $xmlDoc.CreateTextNode($user.pwdlastset)
+        $xmlUserPropText = $xmlDoc.CreateTextNode($PwdLastSetDate)
         $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
         $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
 
         $xmlUserPropElt = $xmlDoc.CreateElement("LastLogon")
-        $xmlUserPropText = $xmlDoc.CreateTextNode($user.lastlogon)
+        $xmlUserPropText = $xmlDoc.CreateTextNode($LastLogon)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+        $XmlUserRootElt.AppendChild($xmlUserElt) | Out-Null
+    }
+    $xmlDoc.LastChild.AppendChild($XmlUserRootElt) | Out-Null;
+    $XmlUserRootElt = $xmlDoc.CreateElement("Admins")
+    foreach ($Admin in $Admins) {
+        $Today = get-date
+        $IsPasswordOld = $Admin.pwdlastset -lt $Today.AddDays(-365 * 3)
+        $IsLastLogonOld = $Admin.lastlogon -lt ($Today.AddDays(-365))
+        $IsPasswordSetToNeverExpire = $Admin.useraccountcontrol -like "*DONT_EXPIRE_PASSWORD*"
+        $PwdLastSetDate = If ($Admin.pwdlastset) { $Admin.pwdlastset.ToString("dd/MM/yyyy") } Else { '' }
+        $LastLogon = If ($Admin.lastlogon) { $Admin.lastlogon.ToString("dd/MM/yyyy") } Else { '' }
+        $xmlUserElt = $xmlDoc.CreateElement("Admin")
+
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("Name")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($Admin.samaccountname)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("IsPasswordOld")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($IsPasswordOld)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("IsLastLogonOld")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($IsLastLogonOld)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("PwdLastSet")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($PwdLastSetDate)
+        $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
+        $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
+
+        $xmlUserPropElt = $xmlDoc.CreateElement("LastLogon")
+        $xmlUserPropText = $xmlDoc.CreateTextNode($LastLogon)
         $xmlUserPropElt.AppendChild($xmlUserPropText) | Out-Null
         $xmlUserElt.AppendChild($xmlUserPropElt) | Out-Null
 
@@ -24842,36 +24889,5 @@ function Invoke-FeedColumbo() {
     $xmlDoc.LastChild.AppendChild($XmlUserRootElt) | Out-Null;
 
     $xmlDoc.Save("c:\users\public\columbofeed.xml")
-
-}
-
-function Find-ProcessLessComputer() {
-    Param(
-        [Alias('DomainController')]
-        [String]
-        $Server,
-
-        [String]
-        $Domain, 
-
-        [ValidateNotNullOrEmpty()]
-        [String]
-        $ProcessName, 
-
-        [Management.Automation.PSCredential]
-        [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty )
-
-    $Arguments = @{}
-    $Arguments['ProcessName'] = $PSBoundParameters['ProcessName']
-    if ($PSBoundParameters['Server']) {
-        $Arguments['Server'] = $PSBoundParameters['Server']
-        $Arguments['Credential'] = $PSBoundParameters['Credential']
-        $Arguments['Domain'] = $PSBoundParameters['Domain']
-    }
-
-    # $ComputersUp = Get-DomainComputer @Arguments -Verbose
-    $Processes = Find-DomainProcess @Arguments -Verbose -Threads 100
-    
 
 }
